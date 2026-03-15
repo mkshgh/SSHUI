@@ -1,0 +1,3 @@
+server_type,path
+production,/path/to/ansible/production/inventory.yaml
+staging,/path/to/ansible/staging/inventory.yaml

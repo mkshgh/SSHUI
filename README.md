@@ -39,7 +39,20 @@ server_type,path
 production,/path/to/ansible/production/inventory.yaml
 staging,/path/to/ansible/staging/inventory.yaml
 ```
+here **server_type** is actually the root name of the **inventory.yaml** file.
+So you might want to make it unique
 
+eg:
+
+```yaml
+production:
+    hosts:
+        server:
+
+staging:
+    hosts:
+        server:
+```
 ## Keybindings
 
 | Key       | Action                              |
