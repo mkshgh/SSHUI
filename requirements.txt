@@ -1,0 +1,4 @@
+textual>=0.52.0
+pyyaml>=6.0
+pyperclip>=1.8.2
+pyinstaller>=6.0
