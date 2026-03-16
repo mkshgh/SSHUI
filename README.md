@@ -34,9 +34,9 @@ python main.py
 Maps a label shown in the UI to an Ansible inventory YAML path.
 
 ```csv
-server_type,path
-production,/path/to/ansible/production/inventory.yaml
-staging,/path/to/ansible/staging/inventory.yaml
+yaml_header,server_type,path
+production,production,/path/to/ansible/production/inventory.yaml
+staging,staging,/path/to/ansible/staging/inventory.yaml
 ```
 
 The top-level YAML key in each file is auto-detected — it does not need to match `server_type`.
