@@ -32,7 +32,10 @@ def load_server_types() -> Dict[str, str]:
 
 
 def get_hosts(server_type: str) -> List[Host]:
-    """Parse hosts from the cached YAML for a given server_type."""
+    """Parse hosts from the cached YAML for a given server_type.
+    The top-level YAML key (yaml_header) is auto-detected as the first key
+    in the file, regardless of whether it matches server_type.
+    """
     path = get_cached_path(server_type)
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -43,7 +46,9 @@ def get_hosts(server_type: str) -> List[Host]:
     if not data:
         return []
 
-    group_data = data.get(server_type, {}) or {}
+    # Use the first top-level key as yaml_header
+    yaml_header = next(iter(data))
+    group_data = data.get(yaml_header, {}) or {}
     hosts_data = group_data.get("hosts", {}) or {}
     hosts: List[Host] = []
     for name, vars_ in hosts_data.items():

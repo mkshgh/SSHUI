@@ -1,104 +1,103 @@
 # SSH Inventory Launcher
 
-A fast, keyboard-driven terminal SSH launcher for Ansible inventories.
+A keyboard-driven terminal SSH launcher for Ansible inventories.
 
-## Project Structure
-
-```
-.
-├── main.py               # Entry point
-├── constants.py          # Shared constants (paths, default ports)
-├── servers.csv           # Maps server group names to inventory YAML paths
-├── ssh_login.log         # Auto-generated login log
-├── requirements.txt
-├── inventory/
-│   ├── cache.py          # .conf folder management, comment handling, refresh
-│   └── loader.py         # YAML parsing, Host dataclass
-├── ssh/
-│   └── connection.py     # SSH command builder, terminal launcher
-├── ui/
-│   ├── app.py            # Textual UI, port forwarding modal
-│   └── search.py         # Host and group filter logic
-└── utils/
-    └── logger.py         # SSH login logger
-```
-
-The `.conf/` folder is auto-created at startup — do not edit it manually. It holds cleaned copies of your inventory files and is safe to delete.
-
-## Setup
+## Install
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
-## servers.csv format
+## Project Structure
+
+```
+.
+├── main.py
+├── constants.py
+├── servers.csv
+├── requirements.txt
+├── inventory/
+│   ├── cache.py       # .conf folder, comment stripping, refresh
+│   └── loader.py      # YAML parsing, Host dataclass
+├── ssh/
+│   └── connection.py  # SSH command builder, terminal launcher
+├── ui/
+│   ├── app.py         # Textual UI, port forwarding modal
+│   └── search.py      # Host and group filter logic
+└── utils/
+    └── logger.py      # Login logger
+```
+
+## servers.csv
+
+Maps a label shown in the UI to an Ansible inventory YAML path.
 
 ```csv
 server_type,path
 production,/path/to/ansible/production/inventory.yaml
 staging,/path/to/ansible/staging/inventory.yaml
 ```
-here **server_type** is actually the root name of the **inventory.yaml** file.
-So you might want to make it unique
 
-eg:
+The top-level YAML key in each file is auto-detected — it does not need to match `server_type`.
 
-```yaml
-production:
-    hosts:
-        server:
+## Inventory Cache
 
-staging:
-    hosts:
-        server:
-```
+On startup the app creates a `.conf/` folder and copies each inventory file into it with all commented lines uncommented. Original files are never modified. Press `R` to wipe and rebuild the cache from source.
+
 ## Keybindings
 
-| Key       | Action                              |
-|-----------|-------------------------------------|
-| `↑ / ↓`   | Navigate groups or hosts            |
-| `Enter`   | Select group / connect to host      |
-| `/ or s`  | Search hosts (or groups)            |
-| `Enter`   | Confirm search, focus list          |
-| `R`       | Refresh inventory cache             |
-| `ESC`     | Back / cancel                       |
+| Key | Action |
+|-----|--------|
+| `Up / Down` | Navigate list |
+| `Enter` | Open SSH session |
+| `F` | Open port forwarding options |
+| `Right Click` | Open port forwarding options |
+| `R` | Refresh inventory cache |
+| `/ or S` | Search hosts or groups |
+| `ESC` | Back |
+| `Ctrl+Q` | Quit |
 
-## Building a standalone executable
+## Port Forwarding
 
-Install PyInstaller:
+Press `F` or right-click a host to open the forwarding panel before connecting.
+
+Preset ports: Postgres (5432), HTTP (80), HTTPS (443), 8080, 3000, Redis (6379).
+
+Custom format — enter as `LOCAL:REMOTE`, comma separated:
+
+```
+8081:80,5433:5432
+```
+
+SSH command produced:
+
+```
+ssh -L 5432:localhost:5432 -L 8081:localhost:80 user@10.0.0.1 -p 22
+```
+
+## Logging
+
+Every connection is appended to `ssh_login.log`:
+
+```
+2026-03-16 14:22:01 | production | web-01 | ubuntu@10.0.0.1:22
+```
+
+## Build Executable
 
 ```bash
 pip install pyinstaller
-```
-
-Build:
-
-```bash
 pyinstaller --onefile --name sshui main.py
 ```
 
-The executable will be at `dist/sshui` (or `dist/sshui.exe` on Windows).
+Output: `dist/sshui.exe` (Windows) or `dist/sshui` (Linux/macOS).
 
-### What to ship alongside the executable
+Place `servers.csv` next to the executable. The `.conf/` folder and `ssh_login.log` are created automatically on first run.
 
-PyInstaller bundles the Python code, but these files must sit next to the executable at runtime:
+## Platform Notes
 
-```
-dist/
-├── sshui.exe        # or sshui on Linux/macOS
-├── servers.csv      # required — defines your inventory groups
-```
-
-The following are created automatically on first run and do not need to be shipped:
-
-```
-.conf/               # auto-created from servers.csv paths
-ssh_login.log        # auto-created on first connection
-```
-
-### Notes
-
-- The inventory YAML files referenced in `servers.csv` must be accessible from the machine running the executable.
-- On Windows, SSH must be available in PATH (OpenSSH is included in Windows 10/11, or use Git Bash).
-- On Linux, a desktop terminal emulator must be installed (`gnome-terminal`, `xterm`, etc.).
+- Windows: uses PowerShell (`start powershell`)
+- Linux: tries `x-terminal-emulator`, `gnome-terminal`, `xterm` in order
+- macOS: uses `osascript` to open Terminal.app
+- SSH must be available in `PATH` on all platforms

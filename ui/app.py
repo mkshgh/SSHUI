@@ -61,8 +61,10 @@ class ForwardingModal(ModalScreen):
     def on_key(self, event) -> None:
         if event.key == "enter":
             self._connect()
+            event.stop()
         elif event.key == "escape":
             self.dismiss(None)
+            event.stop()
 
     def _connect(self) -> None:
         forwards: List[str] = []
@@ -87,7 +89,8 @@ class InventoryApp(App):
         Binding("escape", "back", "Back"),
         Binding("r", "refresh", "Refresh"),
         Binding("/", "search", "Search"),
-        Binding("s", "search", "Search"),
+        Binding("f", "forwarding", "Forwarding"),
+        Binding("ctrl+q", "quit", "Quit"),
     ]
 
     CSS = """
@@ -106,8 +109,6 @@ class InventoryApp(App):
         self._server_types: List[str] = list(load_server_types().keys())
         self._current_type: str = ""
         self._all_hosts: List[Host] = []
-        self._search_mode: str = ""   # "group" or "host"
-        self._searching: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -127,7 +128,7 @@ class InventoryApp(App):
         self.query_one("#host-search-bar", Input).display = False
 
     # ------------------------------------------------------------------
-    # Group selection
+    # Group selection only — host actions handled by on_key / on_click
     # ------------------------------------------------------------------
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == "group-list":
@@ -135,19 +136,58 @@ class InventoryApp(App):
             self._current_type = item_id.removeprefix("grp_")
             self._all_hosts = get_hosts(self._current_type)
             await self._render_hosts(self._all_hosts)
-            # show host search bar
             bar = self.query_one("#host-search-bar", Input)
             bar.display = True
             bar.value = ""
-            # move focus to host list so arrow keys work immediately
             self.query_one("#host-list", ListView).focus()
-        elif event.list_view.id == "host-list":
+        # host-list selection intentionally ignored here
+
+    async def on_key(self, event) -> None:
+        if event.key == "enter":
+            # Only act if host list is focused
             host_list = self.query_one("#host-list", ListView)
-            idx = host_list.index
-            visible = self._visible_hosts()
-            if idx is not None and 0 <= idx < len(visible):
-                host = visible[idx]
-                await self._open_forwarding(host)
+            if self.focused is host_list:
+                host = self._focused_host()
+                if host:
+                    event.stop()
+                    await self._connect_direct(host)
+
+    async def on_click(self, event) -> None:
+        # Ignore clicks when a modal screen is active
+        if len(self.screen_stack) > 1:
+            return
+        host_list = self.query_one("#host-list", ListView)
+        # Check if click landed anywhere inside the host list tree
+        widget = event.widget
+        while widget is not None:
+            if widget is host_list:
+                host = self._focused_host()
+                if not host:
+                    return
+                if event.button == 1:
+                    await self._connect_direct(host)
+                elif event.button == 3:
+                    await self._open_forwarding(host)
+                return
+            widget = getattr(widget, 'parent', None)
+
+    async def action_forwarding(self) -> None:
+        host = self._focused_host()
+        if host:
+            await self._open_forwarding(host)
+
+    def _focused_host(self) -> Host | None:
+        host_list = self.query_one("#host-list", ListView)
+        idx = host_list.index
+        visible = self._visible_hosts()
+        if idx is not None and 0 <= idx < len(visible):
+            return visible[idx]
+        return None
+
+    async def _connect_direct(self, host: Host) -> None:
+        """Log and launch SSH with no forwards. List stays populated."""
+        log_login(host)
+        open_ssh_terminal(host, [])
 
     def _visible_hosts(self) -> List[Host]:
         bar = self.query_one("#host-search-bar", Input)
@@ -185,7 +225,7 @@ class InventoryApp(App):
     # Port forwarding modal
     # ------------------------------------------------------------------
     async def _open_forwarding(self, host: Host) -> None:
-        def on_dismiss(forwards) -> None:
+        async def on_dismiss(forwards) -> None:
             if forwards is None:
                 return
             log_login(host)
@@ -225,3 +265,4 @@ class InventoryApp(App):
             search_bar = self.query_one("#search-bar", Input)
             search_bar.display = True
             search_bar.focus()
+
