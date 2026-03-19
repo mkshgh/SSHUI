@@ -15,23 +15,24 @@ python main.py
 .
 ├── main.py
 ├── constants.py
+├── config.json            # auto-created, stores default forwards + theme
 ├── servers.csv
 ├── requirements.txt
 ├── inventory/
-│   ├── cache.py       # .conf folder, comment handling, refresh
-│   └── loader.py      # YAML parsing, Host dataclass
+│   ├── cache.py           # .conf folder, comment handling, refresh
+│   └── loader.py          # YAML parsing, Host dataclass
 ├── ssh/
-│   └── connection.py  # SSH command builder, terminal launcher
+│   └── connection.py      # SSH command builder, terminal launcher
 ├── ui/
-│   ├── app.py         # Textual UI, port forwarding modal
-│   └── search.py      # Host and group filter logic
+│   ├── app.py             # Textual UI, all modals
+│   ├── config_modal.py    # Default port forwards config
+│   └── search.py          # Host and group filter logic
 └── utils/
-    └── logger.py      # Login logger
+    ├── config.py          # config.json load/save
+    └── logger.py          # Login logger
 ```
 
 ## servers.csv
-
-Maps a label shown in the UI to an Ansible inventory YAML path.
 
 ```csv
 server_type,path
@@ -39,44 +40,43 @@ production,/path/to/ansible/production/inventory.yaml
 staging,/path/to/ansible/staging/inventory.yaml
 ```
 
-The top-level YAML key in each inventory file is auto-detected — it does not need to match `server_type`.
+The top-level YAML key in each file is auto-detected — does not need to match `server_type`.
 
 ## Inventory Cache
 
-On startup the app creates a `.conf/` folder and copies each inventory file into it. Commented lines are uncommented (not removed), so all hosts are visible. Original files are never modified.
-
-Press `R` to wipe and rebuild the cache from source.
+On startup the app creates `.conf/` and copies each inventory file into it. Commented lines are uncommented so all hosts are visible. Original files are never modified. Press `R` to rebuild from source.
 
 ## UI Layout
 
 ```
 [ Search hosts...          ] [Ping] [Telnet]
-[ P   T   Name   IP   User   Port  ]
-[ OK  --  server1  10.0.0.1  ...  ]
-[ --  XX  server2  10.0.0.2  ...  ]
+[ P   T   Name   IP   User   Port   Defaults ]
+[ OK  --  server1  10.0.0.1  ubuntu  22  5432 6379 ]
 ```
 
-- `P` column — Ping result (TCP probe to port 22)
-- `T` column — Telnet result (TCP probe to the host's configured port)
-- Results persist per session until you switch groups or re-run the test
+- `P` — Ping result (TCP probe port 22)
+- `T` — Telnet result (TCP probe configured port)
+- `Defaults` — active default port forwards from config
 
 ## Keybindings
 
 | Key | Action |
 |-----|--------|
-| `Up / Down` | Navigate list |
-| `Enter` | Open SSH session |
-| `Left Click` | Open SSH session |
+| `↑ / ↓` | Navigate list |
+| `Enter` | Open SSH (with default forwards) |
+| `Left Click` | Open SSH (with default forwards) |
 | `F` | Open port forwarding options |
 | `Right Click` | Open port forwarding options |
 | `R` | Refresh inventory cache |
 | `/ or S` | Search hosts or groups |
+| `Ctrl+G` | Open config (default port forwards) |
+| `Ctrl+P` | Command palette (change theme, etc.) |
 | `ESC` | Back |
 | `Ctrl+Q` | Quit |
 
 ## SSH Auth
 
-The app supports both password and key-based auth via inventory vars:
+Supports both password and key-based auth via inventory vars:
 
 ```yaml
 hosts:
@@ -85,44 +85,58 @@ hosts:
     ansible_user: ubuntu
     ansible_port: 22
     ansible_ssh_private_key_file: ~/.ssh/id_rsa   # key auth
-    # ansible_password: secret                    # or password auth
+    ansible_password: secret                       # or password auth
 ```
 
-If `ansible_ssh_private_key_file` is set, the SSH command uses `-i`. If a password is set, it is copied to the clipboard on connect.
+Key auth uses `-i`. Password is copied to clipboard on connect.
 
 ## Port Forwarding
 
 Press `F` or right-click a host to open the forwarding panel.
 
-Preset ports: Postgres (5432), HTTP (80), HTTPS (443), 8080, 3000, Redis (6379).
-
-Custom format — `LOCAL:REMOTE`, comma separated:
-
-```
-8081:80,5433:5432
-```
+- Left column: built-in presets (Postgres, HTTP, HTTPS, 8080, 3000, Redis)
+- Right column: your custom defaults from config (e.g. `7887:7887`)
+- Bottom input: one-off additional forwards for this connection only
 
 SSH command produced:
 
 ```
-ssh -L 5432:localhost:5432 -L 8081:localhost:80 user@10.0.0.1 -p 22
+ssh -L 5432:localhost:5432 -L 7887:localhost:7887 user@10.0.0.1 -p 22
 ```
+
+## Config (Ctrl+G)
+
+Opens the config modal where you set default port forwards — these are pre-checked in the forwarding panel and automatically applied on direct connect (Enter/click).
+
+Custom format in the input field — `LOCAL:REMOTE`, comma separated:
+
+```
+7887:7887,9200:9200
+```
+
+Config is saved to `config.json` automatically on Save.
+
+## Theme
+
+Change theme via `Ctrl+P → Change theme`. The selected theme is saved to `config.json` automatically and restored on next launch.
+
+Available themes: `textual-dark`, `textual-light`, `nord`, `gruvbox`, `monokai`, `dracula`, `tokyo-night`, `flexoki`, `solarized-light`, `solarized-dark`, `catppuccin-mocha`, `catppuccin-latte`, `rose-pine`, `atom-one-dark`, and more.
 
 ## Connectivity Tests
 
-Click `Ping` or `Telnet` in the search bar row to test all visible hosts concurrently.
+Click `Ping` or `Telnet` beside the search bar to test all hosts concurrently.
 
-- `Ping` — TCP connect to port 22 (SSH probe, no root required)
+- `Ping` — TCP connect to port 22 (no root required)
 - `Telnet` — TCP connect to the host's configured port
-- Results show as `OK` (green) or `XX` (red) in the list
-- Tests run in parallel with a 2 second timeout per host
+- `OK` (green) = reachable, `XX` (red) = unreachable, `--` = untested
+- 2 second timeout per host, runs in parallel
 
 ## Logging
 
-Every connection is appended to `ssh_login.log`:
+Every connection appended to `ssh_login.log`:
 
 ```
-2026-03-16 14:22:01 | production | web-01 | ubuntu@10.0.0.1:22
+2026-03-19 14:22:01 | production | web-01 | ubuntu@10.0.0.1:22
 ```
 
 ## Build Executable
@@ -130,16 +144,15 @@ Every connection is appended to `ssh_login.log`:
 ```bash
 pip install pyinstaller
 pyinstaller --onefile --name sshui main.py
-# pyinstaller --onefile --name sshui --icon=favicon.ico main.py
 ```
 
 Output: `dist/sshui.exe` (Windows) or `dist/sshui` (Linux/macOS).
 
-Place `servers.csv` next to the executable. `.conf/` and `ssh_login.log` are created automatically on first run.
+Ship `servers.csv` alongside the executable. `config.json`, `.conf/`, and `ssh_login.log` are created automatically on first run.
 
 ## Platform Notes
 
 - Windows: opens PowerShell (`start powershell -NoExit -Command ...`)
 - Linux: tries `x-terminal-emulator`, `gnome-terminal`, `xterm` in order
 - macOS: uses `osascript` to open Terminal.app
-- SSH must be available in `PATH` on all platforms
+- SSH must be in `PATH` on all platforms

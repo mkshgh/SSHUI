@@ -12,3 +12,26 @@ DEFAULT_PORTS: List[dict] = [
     {"label": "3000",           "local": 3000, "remote": 3000},
     {"label": "Redis     6379", "local": 6379, "remote": 6379},
 ]
+
+AVAILABLE_THEMES: List[str] = [
+    "textual-dark",
+    "textual-light",
+    "textual-ansi",
+    "nord",
+    "gruvbox",
+    "monokai",
+    "dracula",
+    "tokyo-night",
+    "flexoki",
+    "solarized-light",
+    "solarized-dark",
+    "catppuccin-mocha",
+    "catppuccin-latte",
+    "catppuccin-frappe",
+    "catppuccin-macchiato",
+    "rose-pine",
+    "rose-pine-moon",
+    "rose-pine-dawn",
+    "atom-one-dark",
+    "atom-one-light",
+]

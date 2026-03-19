@@ -15,8 +15,10 @@ from textual.binding import Binding
 from inventory.loader import Host, load_server_types, get_hosts
 from inventory.cache import build_cache, refresh_cache
 from ui.search import filter_hosts, filter_groups
+from ui.config_modal import ConfigModal
 from ssh.connection import open_ssh_terminal, build_ssh_command
 from utils.logger import log_login
+from utils.config import load_config, save_config
 from constants import DEFAULT_PORTS
 
 # Two status dicts, one per test type
@@ -29,7 +31,8 @@ _HEADER = (
     f"{'Name':<30}  "
     f"{'IP':<18}  "
     f"{'User':<12}  "
-    f"Port"
+    f"{'Port':<6}  "
+    f"Defaults"
 )
 
 async def _check_reachable(ip: str, port: int, timeout: float = 2.0) -> bool:
@@ -51,35 +54,51 @@ class ForwardingModal(ModalScreen):
     """Modal to pick port forwards before connecting."""
 
     CSS = """
-    ForwardingModal {
-        align: center middle;
-    }
+    ForwardingModal { align: center middle; }
     #modal-box {
-        width: 60;
+        width: 80;
         height: auto;
         background: $surface;
         border: tall $primary;
         padding: 1 2;
     }
-    #custom-input {
-        margin-top: 1;
-    }
-    #modal-footer {
-        margin-top: 1;
-    }
+    #fwd-presets-grid { layout: grid; grid-size: 2; grid-gutter: 0 1; height: auto; }
+    #fwd-custom-grid  { layout: grid; grid-size: 2; grid-gutter: 0 1; height: auto; }
+    #custom-input { margin-top: 1; }
+    #modal-footer { margin-top: 1; }
     """
 
-    def __init__(self, host: Host) -> None:
+    def __init__(self, host: Host, default_forwards: List[str] = None) -> None:
         super().__init__()
         self.host = host
+        all_defaults = default_forwards or []
+        preset_keys = {f"{p['local']}:{p['remote']}" for p in DEFAULT_PORTS}
+        self._default_forwards = set(all_defaults)
+        # custom = defaults that aren't in the built-in preset list
+        self._custom_defaults = [f for f in all_defaults if f not in preset_keys]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-box"):
             yield Label(f"Port Forwarding  —  {self.host.name} ({self.host.ip})")
-            yield Label("Select presets (LOCAL:REMOTE):")
-            for p in DEFAULT_PORTS:
-                yield Checkbox(p["label"], value=False, id=f"preset_{p['local']}_{p['remote']}")
-            yield Label("Custom forwards (LOCAL:REMOTE, comma separated):")
+            yield Label("Presets:")
+            with Horizontal(id="fwd-presets-grid"):
+                for p in DEFAULT_PORTS:
+                    key = f"{p['local']}:{p['remote']}"
+                    yield Checkbox(
+                        p["label"],
+                        value=(key in self._default_forwards),
+                        id=f"preset_{p['local']}_{p['remote']}",
+                    )
+            if self._custom_defaults:
+                yield Label("Custom defaults:")
+                with Horizontal(id="fwd-custom-grid"):
+                    for fwd in self._custom_defaults:
+                        yield Checkbox(
+                            fwd,
+                            value=True,
+                            id=f"custom_def_{fwd.replace(':', '_')}",
+                        )
+            yield Label("Additional forwards (LOCAL:REMOTE, comma separated):")
             yield Input(placeholder="e.g. 8081:80,5433:5432", id="custom-input")
             yield Button("Connect", variant="primary", id="btn-connect")
             yield Label("ENTER / Click Connect → SSH    ESC → Cancel", id="modal-footer")
@@ -98,10 +117,17 @@ class ForwardingModal(ModalScreen):
 
     def _connect(self) -> None:
         forwards: List[str] = []
+        # preset checkboxes
         for p in DEFAULT_PORTS:
             cb = self.query_one(f"#preset_{p['local']}_{p['remote']}", Checkbox)
             if cb.value:
                 forwards.append(f"{p['local']}:{p['remote']}")
+        # custom default checkboxes
+        for fwd in self._custom_defaults:
+            cb = self.query_one(f"#custom_def_{fwd.replace(':', '_')}", Checkbox)
+            if cb.value:
+                forwards.append(fwd)
+        # additional one-off input
         custom_raw = self.query_one("#custom-input", Input).value.strip()
         if custom_raw:
             for part in custom_raw.split(","):
@@ -116,11 +142,12 @@ class ForwardingModal(ModalScreen):
 # ---------------------------------------------------------------------------
 class InventoryApp(App):
     BINDINGS = [
-        Binding("escape", "back", "Back"),
-        Binding("r", "refresh", "Refresh"),
+        Binding("escape", "back", "Back", priority=True),
+        Binding("r", "refresh", "Refresh", priority=True),
         Binding("/", "search", "Search"),
-        Binding("f", "forwarding", "Forwarding"),
-        Binding("ctrl+q", "quit", "Quit"),
+        Binding("f", "forwarding", "Forwarding", priority=True),
+        Binding("ctrl+g", "config", "Config", priority=True),
+        Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
     CSS = """
@@ -140,12 +167,13 @@ class InventoryApp(App):
 
     def __init__(self) -> None:
         super().__init__()
+        self._config = load_config()
         build_cache()
         self._server_types: List[str] = list(load_server_types().keys())
         self._current_type: str = ""
         self._all_hosts: List[Host] = []
-        self._ping_status: Dict[str, str] = {}    # TCP/22 reachability
-        self._telnet_status: Dict[str, str] = {}  # TCP/configured port
+        self._ping_status: Dict[str, str] = {}
+        self._telnet_status: Dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -166,7 +194,16 @@ class InventoryApp(App):
                 yield ListView(id="host-list")
         yield Footer()
 
+    def watch_theme(self, theme: str) -> None:
+        """Auto-save theme to config whenever it changes (e.g. via command palette)."""
+        self._config["theme"] = theme
+        save_config(self._config)
+
     def on_mount(self) -> None:
+        theme = self._config.get("theme", "textual-dark")
+        registered = list(self._registered_themes.keys()) if hasattr(self, "_registered_themes") else []
+        if theme in registered:
+            self.theme = theme
         self.query_one("#search-row", Horizontal).display = False
         self.query_one("#host-header-row", Horizontal).display = False
 
@@ -187,6 +224,13 @@ class InventoryApp(App):
             self.query_one("#host-header-row", Horizontal).display = True
             self.query_one("#host-list", ListView).focus()
         # host-list selection intentionally ignored here
+
+    async def _on_key(self, event) -> None:
+        """Fires before any widget — used for truly global shortcuts."""
+        if event.key == "ctrl+g":
+            await self.action_config()
+            event.stop()
+            event.prevent_default()
 
     async def on_key(self, event) -> None:
         if event.key == "enter":
@@ -231,9 +275,10 @@ class InventoryApp(App):
         return None
 
     async def _connect_direct(self, host: Host) -> None:
-        """Log and launch SSH with no forwards. List stays populated."""
+        """Log and launch SSH. Uses default forwards from config if set."""
         log_login(host)
-        open_ssh_terminal(host, [])
+        forwards = self._config.get("default_forwards", [])
+        open_ssh_terminal(host, forwards)
 
     def _visible_hosts(self) -> List[Host]:
         bar = self.query_one("#host-search-bar", Input)
@@ -242,10 +287,12 @@ class InventoryApp(App):
     async def _render_hosts(self, hosts: List[Host]) -> None:
         host_list = self.query_one("#host-list", ListView)
         await host_list.clear()
+        default_fwds = self._config.get("default_forwards", [])
+        fwd_tag = (" [" + " ".join(f.split(":")[0] for f in default_fwds) + "]") if default_fwds else ""
         for h in hosts:
             p = self._ping_status.get(h.name, "[dim]--[/dim]")
             t = self._telnet_status.get(h.name, "[dim]--[/dim]")
-            label = f"{p}  {t}  {h.name:<30}  {h.ip:<18}  {h.user:<12}  {h.port}"
+            label = f"{p}  {t}  {h.name:<30}  {h.ip:<18}  {h.user:<12}  {h.port:<6}  [dim]{fwd_tag.strip()}[/dim]"
             await host_list.append(ListItem(Label(label, markup=True), id=f"host_{h.name}"))
 
     # ------------------------------------------------------------------
@@ -279,7 +326,10 @@ class InventoryApp(App):
             log_login(host)
             open_ssh_terminal(host, forwards)
 
-        await self.push_screen(ForwardingModal(host), on_dismiss)
+        await self.push_screen(
+            ForwardingModal(host, self._config.get("default_forwards", [])),
+            on_dismiss,
+        )
 
     # ------------------------------------------------------------------
     # Actions
@@ -322,6 +372,17 @@ class InventoryApp(App):
             await self._run_test("ping")
         elif event.button.id == "btn-telnet":
             await self._run_test("telnet")
+
+    async def action_config(self) -> None:
+        async def on_dismiss(result) -> None:
+            if result is None:
+                return
+            self._config["default_forwards"] = result["forwards"]
+            save_config(self._config)
+            if self._all_hosts:
+                await self._render_hosts(self._visible_hosts())
+
+        await self.push_screen(ConfigModal(self._config), on_dismiss)
 
     async def _run_test(self, mode: str) -> None:
         if not self._all_hosts:
