@@ -1,4 +1,6 @@
 # Custom project specific skip
+.conf
+config.json
 servers.csv
 *.log
 .venv
