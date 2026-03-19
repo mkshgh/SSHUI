@@ -6,7 +6,7 @@ Features: search (/ or s), port forwarding modal, refresh (r).
 from __future__ import annotations
 from typing import List, Dict
 from textual.app import App, ComposeResult
-from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Checkbox
+from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Checkbox, Button
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.binding import Binding
@@ -56,7 +56,8 @@ class ForwardingModal(ModalScreen):
                 yield Checkbox(p["label"], value=False, id=f"preset_{p['local']}_{p['remote']}")
             yield Label("Custom forwards (LOCAL:REMOTE, comma separated):")
             yield Input(placeholder="e.g. 8081:80,5433:5432", id="custom-input")
-            yield Label("ENTER=Connect  ESC=Cancel", id="modal-footer")
+            yield Button("Connect", variant="primary", id="btn-connect")
+            yield Label("ENTER / Click Connect → SSH    ESC → Cancel", id="modal-footer")
 
     def on_key(self, event) -> None:
         if event.key == "enter":
@@ -65,6 +66,10 @@ class ForwardingModal(ModalScreen):
         elif event.key == "escape":
             self.dismiss(None)
             event.stop()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-connect":
+            self._connect()
 
     def _connect(self) -> None:
         forwards: List[str] = []

@@ -17,6 +17,7 @@ class Host:
     user: str
     port: int
     password: str
+    ssh_key: str = ""
     server_type: str = ""
 
 
@@ -59,6 +60,7 @@ def get_hosts(server_type: str) -> List[Host]:
             user=vars_.get("ansible_user", "root"),
             port=int(vars_.get("ansible_port", 22)),
             password=vars_.get("ansible_password", ""),
+            ssh_key=vars_.get("ansible_ssh_private_key_file", ""),
             server_type=server_type,
         ))
     return hosts
