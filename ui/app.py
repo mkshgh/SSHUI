@@ -4,6 +4,7 @@ Panels: left = server groups, right = hosts.
 Features: search (/ or s), port forwarding modal, refresh (r).
 """
 from __future__ import annotations
+import asyncio
 from typing import List, Dict
 from textual.app import App, ComposeResult
 from textual.widgets import ListView, ListItem, Label, Header, Footer, Input, Checkbox, Button
@@ -17,6 +18,30 @@ from ui.search import filter_hosts, filter_groups
 from ssh.connection import open_ssh_terminal, build_ssh_command
 from utils.logger import log_login
 from constants import DEFAULT_PORTS
+
+# Two status dicts, one per test type
+# ping  → ICMP-style: try TCP on port 22 as proxy (pure Python, no root needed)
+# telnet → TCP connect to the host's actual configured port
+_COL = {"status": 2, "name": 30, "ip": 18, "user": 12, "port": 6}
+_HEADER = (
+    f"{'P':2}  "
+    f"{'T':2}  "
+    f"{'Name':<30}  "
+    f"{'IP':<18}  "
+    f"{'User':<12}  "
+    f"Port"
+)
+
+async def _check_reachable(ip: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port), timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +128,12 @@ class InventoryApp(App):
     #left-panel { width: 30%; border-right: solid $primary; }
     #right-panel { width: 70%; }
     #search-bar { dock: top; display: none; }
-    #search-bar.visible { display: block; }
+    #search-row { height: 3; display: none; }
+    #host-search-bar { width: 1fr; }
+    #btn-ping { min-width: 8; width: 8; }
+    #btn-telnet { min-width: 9; width: 9; }
+    #host-header-row { height: 1; background: $boost; padding: 0 1; display: none; }
+    #host-header { color: $text-muted; }
     ListView { height: 1fr; }
     Footer { height: 3; }
     """
@@ -114,6 +144,8 @@ class InventoryApp(App):
         self._server_types: List[str] = list(load_server_types().keys())
         self._current_type: str = ""
         self._all_hosts: List[Host] = []
+        self._ping_status: Dict[str, str] = {}    # TCP/22 reachability
+        self._telnet_status: Dict[str, str] = {}  # TCP/configured port
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -125,12 +157,18 @@ class InventoryApp(App):
                     id="group-list",
                 )
             with Vertical(id="right-panel"):
-                yield Input(placeholder="Search hosts...", id="host-search-bar")
+                with Horizontal(id="search-row"):
+                    yield Input(placeholder="Search hosts...", id="host-search-bar")
+                    yield Button("Ping", id="btn-ping", variant="default")
+                    yield Button("Telnet", id="btn-telnet", variant="default")
+                with Horizontal(id="host-header-row"):
+                    yield Label(_HEADER, id="host-header")
                 yield ListView(id="host-list")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#host-search-bar", Input).display = False
+        self.query_one("#search-row", Horizontal).display = False
+        self.query_one("#host-header-row", Horizontal).display = False
 
     # ------------------------------------------------------------------
     # Group selection only — host actions handled by on_key / on_click
@@ -140,10 +178,13 @@ class InventoryApp(App):
             item_id: str = event.item.id or ""
             self._current_type = item_id.removeprefix("grp_")
             self._all_hosts = get_hosts(self._current_type)
+            self._ping_status = {}
+            self._telnet_status = {}
             await self._render_hosts(self._all_hosts)
             bar = self.query_one("#host-search-bar", Input)
-            bar.display = True
             bar.value = ""
+            self.query_one("#search-row", Horizontal).display = True
+            self.query_one("#host-header-row", Horizontal).display = True
             self.query_one("#host-list", ListView).focus()
         # host-list selection intentionally ignored here
 
@@ -202,8 +243,10 @@ class InventoryApp(App):
         host_list = self.query_one("#host-list", ListView)
         await host_list.clear()
         for h in hosts:
-            label = f"{h.name:<30} {h.ip:<18} {h.user:<12} :{h.port}"
-            await host_list.append(ListItem(Label(label), id=f"host_{h.name}"))
+            p = self._ping_status.get(h.name, "[dim]--[/dim]")
+            t = self._telnet_status.get(h.name, "[dim]--[/dim]")
+            label = f"{p}  {t}  {h.name:<30}  {h.ip:<18}  {h.user:<12}  {h.port}"
+            await host_list.append(ListItem(Label(label, markup=True), id=f"host_{h.name}"))
 
     # ------------------------------------------------------------------
     # Live search on host bar
@@ -246,9 +289,12 @@ class InventoryApp(App):
         await host_list.clear()
         self._all_hosts = []
         self._current_type = ""
+        self._ping_status = {}
+        self._telnet_status = {}
         bar = self.query_one("#host-search-bar", Input)
-        bar.display = False
         bar.value = ""
+        self.query_one("#search-row", Horizontal).display = False
+        self.query_one("#host-header-row", Horizontal).display = False
         self.query_one("#group-list", ListView).focus()
 
     async def action_refresh(self) -> None:
@@ -270,4 +316,34 @@ class InventoryApp(App):
             search_bar = self.query_one("#search-bar", Input)
             search_bar.display = True
             search_bar.focus()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-ping":
+            await self._run_test("ping")
+        elif event.button.id == "btn-telnet":
+            await self._run_test("telnet")
+
+    async def _run_test(self, mode: str) -> None:
+        if not self._all_hosts:
+            return
+        btn_id = "btn-ping" if mode == "ping" else "btn-telnet"
+        btn = self.query_one(f"#{btn_id}", Button)
+        btn.disabled = True
+        btn.label = "..."
+
+        async def test_one(host: Host) -> None:
+            # ping mode: TCP to port 22 (SSH probe)
+            # telnet mode: TCP to the host's configured port
+            port = 22 if mode == "ping" else host.port
+            ok = await _check_reachable(host.ip, port)
+            result = "[green]OK[/green]" if ok else "[red]XX[/red]"
+            if mode == "ping":
+                self._ping_status[host.name] = result
+            else:
+                self._telnet_status[host.name] = result
+
+        await asyncio.gather(*[test_one(h) for h in self._all_hosts])
+        await self._render_hosts(self._visible_hosts())
+        btn.label = "Ping" if mode == "ping" else "Telnet"
+        btn.disabled = False
 
