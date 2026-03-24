@@ -142,10 +142,11 @@ class ForwardingModal(ModalScreen):
 # ---------------------------------------------------------------------------
 class InventoryApp(App):
     BINDINGS = [
-        Binding("escape", "back", "Back", priority=True),
+        Binding("escape", "back", "Back", show=True),
         Binding("r", "refresh", "Refresh", priority=True),
         Binding("/", "search", "Search"),
         Binding("f", "forwarding", "Forwarding", priority=True),
+        Binding("ctrl+y", "noop", "Yank pwd", show=True),
         Binding("ctrl+g", "config", "Config", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -227,39 +228,69 @@ class InventoryApp(App):
 
     async def _on_key(self, event) -> None:
         """Fires before any widget — used for truly global shortcuts."""
+        if event.key == "escape":
+            if len(self.screen_stack) == 1:
+                await self.action_back()
+                event.stop()
+                event.prevent_default()
+            # if a modal is open, let the modal handle its own ESC
+            return
         if event.key == "ctrl+g":
             await self.action_config()
             event.stop()
             event.prevent_default()
+        elif event.key == "ctrl+y":
+            # Yank (copy) password of focused host to clipboard
+            host = self._focused_host()
+            if host and host.password:
+                try:
+                    import pyperclip
+                    pyperclip.copy(host.password)
+                except Exception:
+                    pass
+                event.stop()
+                event.prevent_default()
+        elif event.key == "enter":
+            # Handle Enter for host list here — before ListView consumes it
+            if len(self.screen_stack) == 1:  # not in a modal
+                host_list = self.query_one("#host-list", ListView)
+                w = self.focused
+                while w is not None:
+                    if w is host_list:
+                        host = self._focused_host()
+                        if host:
+                            event.stop()
+                            event.prevent_default()
+                            await self._connect_direct(host)
+                        return
+                    w = getattr(w, "parent", None)
 
     async def on_key(self, event) -> None:
-        if event.key == "enter":
-            # Only act if host list is focused
-            host_list = self.query_one("#host-list", ListView)
-            if self.focused is host_list:
-                host = self._focused_host()
-                if host:
-                    event.stop()
-                    await self._connect_direct(host)
+        pass  # all key handling in _on_key
 
     async def on_click(self, event) -> None:
-        # Ignore clicks when a modal screen is active
         if len(self.screen_stack) > 1:
             return
         host_list = self.query_one("#host-list", ListView)
-        # Check if click landed anywhere inside the host list tree
         widget = event.widget
         while widget is not None:
             if widget is host_list:
                 host = self._focused_host()
                 if not host:
                     return
-                if event.button == 1:
-                    await self._connect_direct(host)
-                elif event.button == 3:
+                if event.button == 3:
                     await self._open_forwarding(host)
+                elif event.button == 1:
+                    import time
+                    now = time.monotonic()
+                    last = getattr(self, "_last_click_time", 0)
+                    self._last_click_time = now
+                    if now - last < 0.4:  # double-click threshold
+                        self._last_click_time = 0
+                        await self._connect_direct(host)
+                    # single click just selects (ListView handles highlight)
                 return
-            widget = getattr(widget, 'parent', None)
+            widget = getattr(widget, "parent", None)
 
     async def action_forwarding(self) -> None:
         host = self._focused_host()
@@ -335,6 +366,9 @@ class InventoryApp(App):
     # Actions
     # ------------------------------------------------------------------
     async def action_back(self) -> None:
+        # Don't clear host list if a modal is being dismissed
+        if len(self.screen_stack) > 1:
+            return
         host_list = self.query_one("#host-list", ListView)
         await host_list.clear()
         self._all_hosts = []
@@ -408,3 +442,6 @@ class InventoryApp(App):
         btn.label = "Ping" if mode == "ping" else "Telnet"
         btn.disabled = False
 
+
+    def action_noop(self) -> None:
+        pass
