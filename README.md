@@ -155,8 +155,15 @@ Every connection is appended to `ssh_login.log`:
 ## Build Executable
 
 ```bash
+# without favicon
 pip install pyinstaller
-pyinstaller --onefile --name sshui main.py
+pyinstaller --onefile --name sshui main.py 
+```
+
+```bash
+# with favicon
+pip install pyinstaller
+pyinstaller --onefile --name sshui --icon=favicon.ico main.py
 ```
 
 Output: `dist/sshui.exe` (Windows) or `dist/sshui` (Linux/macOS).
