@@ -50,14 +50,55 @@ def open_ssh_terminal(host: Host, forwards: List[str]) -> None:
 
     system = platform.system()
     if system == "Windows":
-        subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit", "-Command", ssh_cmd])
+        _open_windows(ssh_cmd)
     elif system == "Linux":
-        for term in ["x-terminal-emulator", "gnome-terminal", "xterm"]:
-            try:
-                subprocess.Popen([term, "-e", ssh_cmd])
-                return
-            except FileNotFoundError:
-                continue
+        _open_linux(ssh_cmd)
     elif system == "Darwin":
-        script = f'tell app "Terminal" to do script "{ssh_cmd}"'
-        subprocess.Popen(["osascript", "-e", script])
+        _open_macos(ssh_cmd)
+
+
+def _open_windows(ssh_cmd: str) -> None:
+    """Try Windows Terminal new tab, fall back to a new PowerShell window."""
+    try:
+        # wt (Windows Terminal) — opens in a new tab of the existing window
+        subprocess.Popen(["wt", "--window", "0", "new-tab", "powershell", "-NoExit", "-Command", ssh_cmd])
+    except FileNotFoundError:
+        # Fallback: plain PowerShell window
+        subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit", "-Command", ssh_cmd])
+
+
+def _open_linux(ssh_cmd: str) -> None:
+    """Try tab-capable terminals first, fall back to any available terminal."""
+    tab_attempts = [
+        ["gnome-terminal", "--tab", "--", "bash", "-c", f"{ssh_cmd}; exec bash"],
+        ["xfce4-terminal", "--tab", "--command", ssh_cmd],
+        ["konsole", "--new-tab", "-e", ssh_cmd],
+        ["tilix", "--action=app-new-session", "-e", ssh_cmd],
+    ]
+    window_fallbacks = [
+        ["x-terminal-emulator", "-e", ssh_cmd],
+        ["xterm", "-e", ssh_cmd],
+    ]
+    for cmd in tab_attempts + window_fallbacks:
+        try:
+            subprocess.Popen(cmd)
+            return
+        except FileNotFoundError:
+            continue
+
+
+def _open_macos(ssh_cmd: str) -> None:
+    """Try a new tab in the front Terminal window, fall back to a new window."""
+    # Escape double quotes inside the ssh command for AppleScript
+    escaped = ssh_cmd.replace('"', '\\"')
+    tab_script = (
+        'tell application "Terminal"\n'
+        '  if (count of windows) > 0 then\n'
+        f'    tell application "System Events" to keystroke "t" using command down\n'
+        f'    do script "{escaped}" in front window\n'
+        '  else\n'
+        f'    do script "{escaped}"\n'
+        '  end if\n'
+        'end tell'
+    )
+    subprocess.Popen(["osascript", "-e", tab_script])
