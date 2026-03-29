@@ -222,7 +222,7 @@ class InventoryApp(App):
             self._all_hosts = get_hosts(self._current_type)
             self._ping_status = {}
             self._telnet_status = {}
-            await self._render_hosts(self._all_hosts)
+            await self._render_hosts(self._visible_hosts())
             bar = self.query_one("#host-search-bar", Input)
             bar.value = ""
             self.query_one("#search-row", Horizontal).display = True
@@ -317,10 +317,10 @@ class InventoryApp(App):
 
     def _visible_hosts(self) -> List[Host]:
         bar = self.query_one("#host-search-bar", Input)
-        return filter_hosts(self._all_hosts, bar.value)
+        hosts = filter_hosts(self._all_hosts, bar.value)
+        return sorted(hosts, key=lambda h: h.name.lower())
 
     async def _render_hosts(self, hosts: List[Host]) -> None:
-        hosts = sorted(hosts, key=lambda h: h.name.lower())
         host_list = self.query_one("#host-list", ListView)
         await host_list.clear()
         default_fwds = self._config.get("default_forwards", [])
@@ -395,7 +395,7 @@ class InventoryApp(App):
             await group_list.append(ListItem(Label(self._group_label(t)), id=f"grp_{t}"))
         if self._current_type:
             self._all_hosts = get_hosts(self._current_type)
-            await self._render_hosts(self._all_hosts)
+            await self._render_hosts(self._visible_hosts())
 
     def action_search(self) -> None:
         bar = self.query_one("#host-search-bar", Input)
