@@ -22,14 +22,19 @@ class Host:
 
 
 def load_server_types() -> Dict[str, str]:
-    """Return {server_type: cached_yaml_path} from CSV."""
+    """Return {server_type: cached_yaml_path} from CSV, sorted case-insensitively."""
     data: Dict[str, str] = {}
     with open(CSV_FILE, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             st = row["server_type"].strip()
             data[st] = get_cached_path(st)
-    return data
+    return dict(sorted(data.items(), key=lambda x: x[0].lower()))
+
+
+def get_host_count(server_type: str) -> int:
+    """Return the number of hosts in a server_type's cached YAML."""
+    return len(get_hosts(server_type))
 
 
 def get_hosts(server_type: str) -> List[Host]:

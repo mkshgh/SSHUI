@@ -12,7 +12,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.binding import Binding
 
-from inventory.loader import Host, load_server_types, get_hosts
+from inventory.loader import Host, load_server_types, get_hosts, get_host_count
 from inventory.cache import build_cache, refresh_cache
 from ui.search import filter_hosts, filter_groups
 from ui.config_modal import ConfigModal
@@ -176,13 +176,17 @@ class InventoryApp(App):
         self._ping_status: Dict[str, str] = {}
         self._telnet_status: Dict[str, str] = {}
 
+    def _group_label(self, server_type: str) -> str:
+        count = get_host_count(server_type)
+        return f"{server_type} ({count})"
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal():
             with Vertical(id="left-panel"):
                 yield Input(placeholder="Filter groups...", id="search-bar")
                 yield ListView(
-                    *[ListItem(Label(t), id=f"grp_{t}") for t in self._server_types],
+                    *[ListItem(Label(self._group_label(t)), id=f"grp_{t}") for t in self._server_types],
                     id="group-list",
                 )
             with Vertical(id="right-panel"):
@@ -316,6 +320,7 @@ class InventoryApp(App):
         return filter_hosts(self._all_hosts, bar.value)
 
     async def _render_hosts(self, hosts: List[Host]) -> None:
+        hosts = sorted(hosts, key=lambda h: h.name.lower())
         host_list = self.query_one("#host-list", ListView)
         await host_list.clear()
         default_fwds = self._config.get("default_forwards", [])
@@ -338,7 +343,7 @@ class InventoryApp(App):
             group_list = self.query_one("#group-list", ListView)
             await group_list.clear()
             for t in filtered_groups:
-                await group_list.append(ListItem(Label(t), id=f"grp_{t}"))
+                await group_list.append(ListItem(Label(self._group_label(t)), id=f"grp_{t}"))
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Enter in either search bar moves focus to the relevant list."""
@@ -387,7 +392,7 @@ class InventoryApp(App):
         group_list = self.query_one("#group-list", ListView)
         await group_list.clear()
         for t in self._server_types:
-            await group_list.append(ListItem(Label(t), id=f"grp_{t}"))
+            await group_list.append(ListItem(Label(self._group_label(t)), id=f"grp_{t}"))
         if self._current_type:
             self._all_hosts = get_hosts(self._current_type)
             await self._render_hosts(self._all_hosts)

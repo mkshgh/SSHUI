@@ -64,6 +64,8 @@ Press `R` to rebuild the cache from source.
 - `T` — Telnet result (TCP probe to configured port)
 - `Defaults` — active default port forwards from config
 
+Server groups are sorted A-Z (case-insensitive) and show the host count: `UATSERVER (10)`. Hosts within each group are also sorted A-Z (case-insensitive).
+
 ## Keybindings
 
 | Key | Action |
@@ -187,7 +189,7 @@ pyinstaller sshui.spec
 
 ## Platform Notes
 
-- Windows: opens PowerShell (`start powershell -NoExit -Command ...`)
-- Linux: tries `x-terminal-emulator`, `gnome-terminal`, `xterm` in order
-- macOS: uses `osascript` to open Terminal.app
+- Windows: tries `wt` (Windows Terminal) new tab first, falls back to a new PowerShell window
+- Linux: tries tab-capable terminals (`gnome-terminal --tab`, `xfce4-terminal --tab`, `konsole --new-tab`, `tilix`) then falls back to `x-terminal-emulator` / `xterm` as a new window
+- macOS: opens a new tab in the front Terminal window via AppleScript, falls back to a new window
 - SSH must be in `PATH` on all platforms
