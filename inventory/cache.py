@@ -1,10 +1,12 @@
 """
 Manages the .conf cache folder.
 Copies inventory YAML files from CSV paths, strips comments, never touches originals.
+Hosts within each group are sorted A-Z (case-insensitive) at write time.
 """
 import os
 import shutil
 import csv
+import yaml
 from constants import CSV_FILE, CONF_DIR
 
 
@@ -14,15 +16,27 @@ def _uncomment_lines(text: str) -> str:
     for line in text.splitlines():
         stripped = line.lstrip()
         if stripped.startswith("#"):
-            # Measure leading whitespace, then remove the leading '# ' or '#'
             indent = line[: len(line) - len(stripped)]
-            uncommented = stripped[1:]          # drop the '#'
-            if uncommented.startswith(" "):     # drop one optional space after '#'
+            uncommented = stripped[1:]
+            if uncommented.startswith(" "):
                 uncommented = uncommented[1:]
             lines.append(indent + uncommented)
         else:
             lines.append(line)
     return "\n".join(lines)
+
+
+def _sort_hosts_in_data(data: dict) -> dict:
+    """Sort the hosts dict inside each top-level group, case-insensitively."""
+    if not data:
+        return data
+    for header, group in data.items():
+        if not isinstance(group, dict):
+            continue
+        hosts = group.get("hosts")
+        if isinstance(hosts, dict):
+            group["hosts"] = dict(sorted(hosts.items(), key=lambda x: x[0].lower()))
+    return data
 
 
 def _cached_name(server_type: str) -> str:
@@ -43,6 +57,12 @@ def build_cache() -> None:
             with open(src_path, "r", encoding="utf-8") as src:
                 content = src.read()
             cleaned = _uncomment_lines(content)
+            try:
+                data = yaml.safe_load(cleaned)
+                data = _sort_hosts_in_data(data)
+                cleaned = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+            except Exception:
+                pass  # if YAML parse fails, write the text-cleaned version as-is
             with open(dst_path, "w", encoding="utf-8") as dst:
                 dst.write(cleaned)
 

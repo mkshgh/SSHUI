@@ -317,8 +317,7 @@ class InventoryApp(App):
 
     def _visible_hosts(self) -> List[Host]:
         bar = self.query_one("#host-search-bar", Input)
-        hosts = filter_hosts(self._all_hosts, bar.value)
-        return sorted(hosts, key=lambda h: h.name.lower())
+        return filter_hosts(self._all_hosts, bar.value)
 
     async def _render_hosts(self, hosts: List[Host]) -> None:
         host_list = self.query_one("#host-list", ListView)
