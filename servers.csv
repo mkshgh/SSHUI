@@ -1,3 +1,2 @@
 yaml_header,server_type,path
-production,production,/path/to/ansible/production/inventory.yaml
-staging,staging,/path/to/ansible/staging/inventory.yaml
+production,production,C:\Applications\SSHUI\config\inventory.yaml

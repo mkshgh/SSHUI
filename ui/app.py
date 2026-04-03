@@ -16,6 +16,7 @@ from inventory.loader import Host, load_server_types, get_hosts, get_host_count
 from inventory.cache import build_cache, refresh_cache
 from ui.search import filter_hosts, filter_groups
 from ui.config_modal import ConfigModal
+from ui.explorer_modal import ExplorerModal
 from ssh.connection import open_ssh_terminal, build_ssh_command
 from utils.logger import log_login
 from utils.config import load_config, save_config
@@ -160,6 +161,7 @@ class InventoryApp(App):
     #host-search-bar { width: 1fr; }
     #btn-ping { min-width: 8; width: 8; }
     #btn-telnet { min-width: 9; width: 9; }
+    #btn-explore { min-width: 9; width: 9; }
     #host-header-row { height: 1; background: $boost; padding: 0 1; display: none; }
     #host-header { color: $text-muted; }
     ListView { height: 1fr; }
@@ -194,6 +196,7 @@ class InventoryApp(App):
                     yield Input(placeholder="Search hosts...", id="host-search-bar")
                     yield Button("Ping", id="btn-ping", variant="default")
                     yield Button("Telnet", id="btn-telnet", variant="default")
+                    yield Button("Explore", id="btn-explore", variant="default")
                 with Horizontal(id="host-header-row"):
                     yield Label(_HEADER, id="host-header")
                 yield ListView(id="host-list")
@@ -366,6 +369,13 @@ class InventoryApp(App):
             on_dismiss,
         )
 
+    async def _open_explorer(self) -> None:
+        """Open file explorer for the currently focused host."""
+        host = self._focused_host()
+        if not host:
+            return
+        await self.push_screen(ExplorerModal(host))
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -410,6 +420,8 @@ class InventoryApp(App):
             await self._run_test("ping")
         elif event.button.id == "btn-telnet":
             await self._run_test("telnet")
+        elif event.button.id == "btn-explore":
+            await self._open_explorer()
 
     async def action_config(self) -> None:
         async def on_dismiss(result) -> None:
