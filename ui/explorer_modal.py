@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple, Dict
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Label, Button, ListView, ListItem, Input, Static
+    Label, Button, ListView, ListItem, Input, Static, ProgressBar
 )
 from textual.containers import Horizontal, Vertical
 from textual.worker import Worker, get_current_worker
@@ -52,6 +52,7 @@ class FileEntry:
     is_dir: bool
     size: int = 0
     perms: str = ""
+    link_target: str = ""
 
 
 class UploadState:
@@ -201,6 +202,14 @@ class ExplorerModal(ModalScreen):
         margin-top: 1;
         color: $text-muted;
     }
+    #progress-bar {
+        height: 1;
+        margin-top: 1;
+        display: none;
+    }
+    #progress-bar.visible {
+        display: block;
+    }
     """
 
     def __init__(self, host: Host) -> None:
@@ -214,16 +223,17 @@ class ExplorerModal(ModalScreen):
         self._download_state = DownloadState()  # Track download state across async boundaries
         self._delete_state = DeleteState()  # Track delete state across async boundaries
         self._active_workers: Dict[str, Worker] = {}  # Track active workers for cancellation
+        self._operation_in_progress: bool = False  # Track if upload/download/delete is running
+        self._upload_proc: Optional[asyncio.subprocess.Process] = None  # Store subprocess for cancellation
 
     def compose(self) -> ComposeResult:
         with Vertical(id="explorer-box"):
             yield Label(
-                f"SFTP: {self.host.name} ({self.host.ip})",
+                f"[bold red]EXPERIMENTAL:[/bold red] {self.host.name} ({self.host.ip})",
                 id="explorer-header"
             )
             with Horizontal(id="path-bar"):
                 yield Button("Home", id="btn-home")
-                yield Button("..", id="btn-up")
                 yield Input(value=self.current_path, id="path-input")
                 yield Button("Go", id="btn-go")
                 yield Button("↻", id="btn-refresh")
@@ -231,10 +241,10 @@ class ExplorerModal(ModalScreen):
             with Horizontal(id="action-panel"):
                 yield Button("Download", id="btn-download", variant="primary")
                 yield Button("Upload", id="btn-upload")
-                yield Button("View", id="btn-view")
                 yield Button("Delete", id="btn-delete", variant="error")
                 yield Button("Close", id="btn-close")
             yield Label("Ready", id="status-bar")
+            yield ProgressBar(id="progress-bar", total=100)
 
     async def on_mount(self) -> None:
         self._start_worker("load_directory", self._load_directory("."))
@@ -308,9 +318,13 @@ class ExplorerModal(ModalScreen):
                 display = f"📁 {entry.name}/"
                 item_id = f"entry_dir_{safe_name}"
             else:
-                size_str = self._format_size(entry.size)
-                display = f"📄 {entry.name} ({size_str})"
-                item_id = f"entry_file_{safe_name}"
+                if entry.link_target:
+                    display = f"🔗 {entry.name} -> {entry.link_target}"
+                    item_id = f"entry_link_{safe_name}"
+                else:
+                    size_str = self._format_size(entry.size)
+                    display = f"📄 {entry.name} ({size_str})"
+                    item_id = f"entry_file_{safe_name}"
             
             await file_list.append(
                 ListItem(Label(display, markup=True), id=item_id)
@@ -322,6 +336,11 @@ class ExplorerModal(ModalScreen):
 
     async def _go_home(self) -> None:
         """Navigate to the user's home directory, fallback to root."""
+        # Block navigation during file operations
+        if self._operation_in_progress:
+            self.set_status("Please wait for current operation to complete")
+            return
+        
         # If we already know the home path, use it
         if self._home_path:
             self._start_worker("load_directory", self._load_directory(self._home_path))
@@ -364,76 +383,105 @@ class ExplorerModal(ModalScreen):
             return f"{size/(1024*1024):.1f}M"
         return f"{size/(1024*1024*1024):.1f}G"
 
-    async def _ssh_ls(self, path: str) -> Tuple[Optional[List[FileEntry]], Optional[str]]:
+    async def _ssh_ls(self, path: str, timeout: int = 15) -> Tuple[Optional[List[FileEntry]], Optional[str]]:
         """Execute ls via SSH and parse output. Returns (entries, error_message)."""
         # Use --color=never to disable ANSI color codes and -A for better parsing
         cmd = self._build_ssh_command(f'ls -la --color=never -A "{path}"')
         try:
+            # Use CREATE_NO_WINDOW on Windows to prevent console inheritance
+            import sys
+            kwargs = {}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+            
             proc = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                **kwargs
             )
-            stdout, stderr = await proc.communicate()
+            # Add timeout to prevent hanging
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            
             if proc.returncode != 0:
                 err_msg = _strip_ansi(stderr.decode()).strip() if stderr else ""
                 return None, err_msg or f"Failed to list {path}"
             # Strip ANSI sequences and parse
             clean_output = _strip_ansi(stdout.decode()) if stdout else ""
+            # Limit output size to prevent UI freezing
+            if len(clean_output) > 50000:  # 50KB limit
+                clean_output = clean_output[:50000] + "\n... [truncated]"
             return self._parse_ls_output(clean_output.strip()), None
+        except asyncio.TimeoutError:
+            return None, f"Timeout listing directory {path}"
         except Exception as e:
             return None, str(e)
 
     def _parse_ls_output(self, output: str) -> List[FileEntry]:
         """Parse ls -la output into FileEntry objects."""
         entries = []
-        for line in output.split("\n"):
+        for line_num, line in enumerate(output.split("\n")):
             line = line.strip()
             if not line:
-                continue
-            # Skip lines that don't look like ls output or have permission issues
-            # Valid ls lines start with: - (file), d (dir), l (link), etc.
-            # Also skip lines that start with common error messages
-            if (len(line) < 2 or line[0] not in "-dlcbsp" or 
-                line.startswith("ls: cannot access") or
-                line.startswith("Permission denied") or
-                line.startswith("No such file or directory")):
                 continue
             # Skip "total X" line
             if line.startswith("total "):
                 continue
-            
-            parts = line.split()
-            if len(parts) < 6:
+                
+            # Skip lines that don't look like ls output or have permission issues
+            # Valid ls lines start with: - (file), d (dir), l (link), etc.
+            if (len(line) < 2 or line[0] not in "-dlcbsp"):
                 continue
                 
-            # Find the name field - it's usually the last field
-            # Handle different ls output formats by looking for the name at the end
-            name = parts[-1]
-            
-            # Handle symlinks (name -> target)
-            is_link = " -> " in name
-            if is_link:
-                name = name.split(" -> ")[0]
-                
-            if name in (".", ".."):
-                continue
-                
-            # Extract permissions from first field
-            perms = parts[0]
-            is_dir = perms.startswith("d")
-            
-            # Try to find size field - it can be in different positions
-            size = 0
-            for part in parts[1:]:
-                try:
-                    if part.isdigit():
-                        size = int(part)
-                        break
-                except ValueError:
+            try:
+                parts = line.split()
+                if len(parts) < 6:
                     continue
                     
-            entries.append(FileEntry(name, is_dir or is_link, size, perms))
+                # Extract permissions from first field
+                perms = parts[0]
+                is_dir = perms.startswith("d")
+                
+                # Find the name field - it's usually the last field(s)
+                # Handle names with spaces by finding the start of the name field
+                # ls format: perms links owner group size month day time name
+                # Name starts after the time field (usually position 8+)
+                if len(parts) >= 9:
+                    name_parts = parts[8:]
+                    name = " ".join(name_parts)
+                else:
+                    name = parts[-1]
+                
+                # Handle symlinks (name -> target)
+                is_link = " -> " in name
+                link_target = ""
+                if is_link:
+                    name_parts = name.split(" -> ")
+                    name = name_parts[0]
+                    link_target = name_parts[1] if len(name_parts) > 1 else ""
+                    
+                if name in (".", ".."):
+                    continue
+                    
+                # Try to find size field - it's usually at position 4 for files
+                # Directories often show 4096 or similar, but some systems show different values
+                size = 0
+                if len(parts) >= 5:
+                    try:
+                        size = int(parts[4])
+                    except ValueError:
+                        # If size parsing fails, use 0 for directories
+                        if is_dir:
+                            size = 0
+                        else:
+                            continue  # Skip files with invalid sizes
+                        
+                entries.append(FileEntry(name, is_dir or is_link, size, perms, link_target))
+                
+            except Exception:
+                # Skip malformed lines but continue processing others
+                continue
+                
         return entries
 
     def _build_ssh_command(self, remote_cmd: str) -> str:
@@ -484,6 +532,12 @@ class ExplorerModal(ModalScreen):
                         item = file_list.highlighted_child
                         if item:
                             item_id = item.id or ""
+                            
+                            # Block navigation during file operations
+                            if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
+                                self.set_status("Please wait for current operation to complete")
+                                return
+                            
                             if item_id == "entry_parent":
                                 parent = str(PurePosixPath(self.current_path).parent)
                                 if parent == "." or self.current_path == ".":
@@ -494,6 +548,7 @@ class ExplorerModal(ModalScreen):
                                 dir_name = self._id_to_name.get(safe_name, safe_name)
                                 new_path = str(PurePosixPath(self.current_path) / dir_name)
                                 self._start_worker("load_directory", self._load_directory(new_path))
+                            # Symlinks do nothing on click for now
                     # single click just selects (ListView handles highlight)
                 return
             widget = getattr(widget, "parent", None)
@@ -501,13 +556,14 @@ class ExplorerModal(ModalScreen):
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle action buttons."""
         btn_id = event.button.id
+        
+        # Block navigation buttons during file operations
+        if self._operation_in_progress and btn_id in ("btn-home", "btn-go", "btn-refresh"):
+            self.set_status("Please wait for current operation to complete")
+            return
+        
         if btn_id == "btn-home":
             await self._go_home()
-        elif btn_id == "btn-up":
-            parent = str(PurePosixPath(self.current_path).parent)
-            if parent == "." or self.current_path == ".":
-                parent = "."
-            self._start_worker("load_directory", self._load_directory(parent))
         elif btn_id == "btn-go":
             path = self.query_one("#path-input", Input).value
             self._start_worker("load_directory", self._load_directory(path))
@@ -517,8 +573,6 @@ class ExplorerModal(ModalScreen):
             await self._handle_download()
         elif btn_id == "btn-upload":
             await self._handle_upload()
-        elif btn_id == "btn-view":
-            await self._handle_view()
         elif btn_id == "btn-delete":
             await self._handle_delete()
         elif btn_id == "btn-close":
@@ -541,6 +595,10 @@ class ExplorerModal(ModalScreen):
             safe_name = item_id.removeprefix("entry_dir_")
             original_name = self._id_to_name.get(safe_name, safe_name)
             return (original_name, True)
+        elif item_id.startswith("entry_link_"):
+            safe_name = item_id.removeprefix("entry_link_")
+            original_name = self._id_to_name.get(safe_name, safe_name)
+            return (original_name, True)  # Treat links as directories for navigation
         elif item_id.startswith("entry_file_"):
             safe_name = item_id.removeprefix("entry_file_")
             original_name = self._id_to_name.get(safe_name, safe_name)
@@ -553,6 +611,10 @@ class ExplorerModal(ModalScreen):
         if not selected:
             self.set_status("No file selected")
             return
+        
+        # Block navigation during operation
+        self._operation_in_progress = True
+        
         name, is_dir = selected
 
         remote_path = str(PurePosixPath(self.current_path) / name)
@@ -572,19 +634,15 @@ class ExplorerModal(ModalScreen):
     async def _download_flow(self) -> None:
         """Worker method that handles entire download flow including modals."""
         # Check for existing file
-        self.post_message(ProgressMessage("Download", "Checking local file"))
-        if os.path.exists(self._download_state.local_path):
-            # Ask for overwrite confirmation
-            self.post_message(ProgressMessage("Download", "Requesting overwrite confirmation"))
-            confirmed = await self.app.push_screen_wait(
-                ConfirmModal(f"'{self._download_state.name}' exists. Overwrite?")
-            )
-            if not confirmed:
-                self.post_message(StatusMessage("Download cancelled"))
-                return
+        self.post_message(ProgressMessage("Download", "Checking remote file", 10))
+        exists = await self._file_exists(self._download_state.remote_path)
+        if not exists:
+            self.post_message(StatusMessage("File not found on remote"))
+            self.post_message(ProgressMessage("Download", "Complete", 100))
+            return
 
         # Perform the actual download
-        self.post_message(ProgressMessage("Download", "Starting transfer"))
+        self.post_message(ProgressMessage("Download", "Starting transfer", 20))
         
         # Check if downloading a directory by checking if selection was a directory
         is_dir_download = any(
@@ -604,19 +662,20 @@ class ExplorerModal(ModalScreen):
             )
         
         try:
+            # Use CREATE_NO_WINDOW on Windows to prevent console inheritance
+            import sys
+            kwargs = {}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+            
             proc = await asyncio.create_subprocess_shell(
                 cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                **kwargs
             )
             self.post_message(ProgressMessage("Download", "Transferring", 50))
-            stdout, stderr = await proc.communicate()
-            
-            # Sanitize any output before processing
-            if stderr:
-                stderr_clean = _strip_ansi(stderr.decode().strip())
-                if stderr_clean:
-                    self.post_message(StatusMessage(f"Transfer warning: {stderr_clean[:50]}"))
+            await proc.communicate()
             
             if proc.returncode == 0:
                 self.post_message(ProgressMessage("Download", "Finalizing", 90))
@@ -635,97 +694,118 @@ class ExplorerModal(ModalScreen):
     def on_download_complete_message(self, event: DownloadCompleteMessage) -> None:
         """Handle download completion message from worker."""
         self.set_status(event.message)
+        self.hide_progress()
+        # Allow navigation again
+        self._operation_in_progress = False
+        # Remove from tracking without canceling (already finished)
+        if "download" in self._active_workers:
+            del self._active_workers["download"]
+        # No refresh needed for download (local file operation)
+
+    def on_progress_message(self, event: ProgressMessage) -> None:
+        """Handle progress updates from workers."""
+        if event.percentage is not None:
+            self.show_progress(event.percentage)
+            self.set_status(f"{event.operation}: {event.stage} ({event.percentage}%)")
+        else:
+            self.set_status(f"{event.operation}: {event.stage}")
 
     async def _handle_upload(self) -> None:
-        """Upload a local file to current remote directory - start worker flow."""
+        """Upload a local file to current remote directory - start worker to handle modals."""
+        # Block navigation during operation
+        self._operation_in_progress = True
         self.set_status("Preparing upload...")
-        # Start the entire upload flow in a tracked worker
-        self._start_worker("upload", self._upload_flow(), group="upload", exclusive=True)
+        self.show_progress(0)
+        # Start worker to handle entire upload flow including modals
+        self._start_worker("upload", self._upload_flow_with_modals(), group="upload", exclusive=True)
 
-    async def _upload_flow(self) -> None:
-        """Worker method that handles entire upload flow including modals."""
+    async def _upload_flow_with_modals(self) -> None:
+        """Worker: Handles entire upload flow including modals and keeps subprocess reference."""
+        # Store worker reference for cancellation checks
+        worker = get_current_worker()
+        
         # Ask for file path
         self.post_message(ProgressMessage("Upload", "Requesting file path"))
         local_path = await self.app.push_screen_wait(_InputModal("Local file path:"))
         if not local_path or not os.path.exists(local_path):
             self.post_message(StatusMessage("File not found or cancelled"))
+            self.post_message(UploadCompleteMessage(False, "Cancelled", refresh=False))
             return
 
         local_name = os.path.basename(local_path)
         remote_path = str(PurePosixPath(self.current_path) / local_name)
-
-        # Store state for the upload process
-        self._upload_state = UploadState()
-        self._upload_state.local_path = local_path
-        self._upload_state.remote_path = remote_path
-        self._upload_state.local_name = local_name
-
+        
         # Check if uploading a directory
         is_dir_upload = os.path.isdir(local_path)
 
         # Check if file/directory exists remotely
-        self.post_message(ProgressMessage("Upload", "Checking remote file"))
-        exists = await self._file_exists(remote_path)
+        self.post_message(ProgressMessage("Upload", "Checking remote file", 10))
+        exists = await self._file_exists(remote_path, timeout=5)
         if exists:
             # Ask for overwrite confirmation
-            self.post_message(ProgressMessage("Upload", "Requesting overwrite confirmation"))
+            self.post_message(ProgressMessage("Upload", "Requesting confirmation", 15))
             confirmed = await self.app.push_screen_wait(
                 ConfirmModal(f"'{local_name}' exists. Overwrite?")
             )
             if not confirmed:
                 self.post_message(StatusMessage("Upload cancelled"))
+                self.post_message(UploadCompleteMessage(False, "Cancelled", refresh=False))
                 return
 
         # Perform the actual upload
-        self.post_message(ProgressMessage("Upload", "Starting transfer"))
+        self.post_message(ProgressMessage("Upload", "Starting transfer", 20))
         
         if is_dir_upload:
-            # Use recursive SCP for directories
             cmd = f"scp -r -P {self.host.port} -i \"{self.host.ssh_key}\" \"{local_path}\" \"{self.host.user}@{self.host.ip}\":\"{remote_path}\""
         else:
-            # Use regular SCP for files
             cmd = self._build_scp_command(remote_path, local_path, download=False)
         
         try:
+            import sys
+            kwargs = {}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = 0x08000000
+            
             proc = await asyncio.create_subprocess_shell(
                 cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                **kwargs
             )
-            self.post_message(ProgressMessage("Upload", "Transferring", 50))
-            stdout, stderr = await proc.communicate()
             
-            # Sanitize any output before processing
-            if stdout:
-                stdout_clean = _strip_ansi(stdout.decode().strip())
-                if stdout_clean:
-                    self.post_message(StatusMessage(f"Upload info: {stdout_clean[:50]}"))
-            if stderr:
-                stderr_clean = _strip_ansi(stderr.decode().strip())
-                if stderr_clean:
-                    self.post_message(StatusMessage(f"Transfer warning: {stderr_clean[:50]}"))
+            # Store subprocess reference for cancellation
+            self._upload_proc = proc
+            
+            self.post_message(ProgressMessage("Upload", "Transferring", 60))
+            await proc.communicate()
+            
+            # Check if worker was cancelled during transfer
+            if worker.is_cancelled:
+                try:
+                    proc.kill()
+                except:
+                    pass
+                return
             
             if proc.returncode == 0:
-                self.post_message(ProgressMessage("Upload", "Finalizing", 90))
-                self.post_message(UploadCompleteMessage(
-                    True, f"Uploaded {local_name}", refresh=True
-                ))
+                self.post_message(UploadCompleteMessage(True, f"Uploaded {local_name}", refresh=True))
             else:
-                self.post_message(UploadCompleteMessage(
-                    False, "Upload failed", refresh=False
-                ))
+                self.post_message(UploadCompleteMessage(False, "Upload failed", refresh=False))
         except Exception as e:
-            self.post_message(UploadCompleteMessage(
-                False, f"Error: {str(e)[:50]}", refresh=False
-            ))
+            self.post_message(UploadCompleteMessage(False, f"Error: {str(e)[:50]}", refresh=False))
 
     def on_upload_complete_message(self, event: UploadCompleteMessage) -> None:
         """Handle upload completion message from worker."""
         self.set_status(event.message)
+        self.hide_progress()
+        # Allow navigation again
+        self._operation_in_progress = False
+        # Remove from tracking without canceling (already finished)
+        if "upload" in self._active_workers:
+            del self._active_workers["upload"]
         if event.refresh:
-            # Refresh directory listing
+            # Refresh directory listing - start a new worker for this
             self._start_worker("load_directory", self._load_directory(self.current_path))
-            self.set_status(f"{event.operation}: {event.stage}")
 
     def _start_worker(self, name: str, coro, group: str = None, exclusive: bool = False) -> Worker:
         """Start a worker and track it for cancellation."""
@@ -814,6 +894,9 @@ class ExplorerModal(ModalScreen):
         if not selected:
             self.set_status("No file selected")
             return
+        
+        # Block navigation during operation
+        self._operation_in_progress = True
         name, is_dir = selected
         if name == "..":
             self.set_status("Cannot delete parent directory")
@@ -833,36 +916,34 @@ class ExplorerModal(ModalScreen):
     async def _delete_flow(self) -> None:
         """Worker method that handles the entire delete flow including modal."""
         # Ask for confirmation
-        self.post_message(ProgressMessage("Delete", "Requesting confirmation"))
+        self.post_message(ProgressMessage("Delete", "Requesting confirmation", 10))
         confirmed = await self.app.push_screen_wait(
             ConfirmModal(f"Delete '{self._delete_state.name}'? This cannot be undone.")
         )
         if not confirmed:
             self.post_message(StatusMessage("Delete cancelled"))
+            self.post_message(ProgressMessage("Delete", "Cancelled", 100))
             return
 
         # Perform the actual delete
-        self.post_message(ProgressMessage("Delete", "Removing file"))
+        self.post_message(ProgressMessage("Delete", "Removing file", 30))
         rm_cmd = "rm -rf" if self._delete_state.is_dir else "rm"
         cmd = self._build_ssh_command(f'{rm_cmd} "{self._delete_state.remote_path}"')
         try:
+            # Use CREATE_NO_WINDOW on Windows to prevent console inheritance
+            import sys
+            kwargs = {}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+            
             proc = await asyncio.create_subprocess_shell(
                 cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                **kwargs
             )
-            self.post_message(ProgressMessage("Delete", "Executing", 50))
-            stdout, stderr = await proc.communicate()
-            
-            # Sanitize any output before processing
-            if stdout:
-                stdout_clean = _strip_ansi(stdout.decode().strip())
-                if stdout_clean:
-                    self.post_message(StatusMessage(f"Delete info: {stdout_clean[:50]}"))
-            if stderr:
-                stderr_clean = _strip_ansi(stderr.decode().strip())
-                if stderr_clean:
-                    self.post_message(StatusMessage(f"Delete warning: {stderr_clean[:50]}"))
+            self.post_message(ProgressMessage("Delete", "Executing", 70))
+            await proc.communicate()
             
             if proc.returncode == 0:
                 self.post_message(ProgressMessage("Delete", "Finalizing", 90))
@@ -881,24 +962,48 @@ class ExplorerModal(ModalScreen):
     def on_delete_complete_message(self, event: DeleteCompleteMessage) -> None:
         """Handle delete completion message from worker."""
         self.set_status(event.message)
+        self.hide_progress()
+        # Allow navigation again
+        self._operation_in_progress = False
+        # Remove from tracking without canceling (already finished)
+        if "delete" in self._active_workers:
+            del self._active_workers["delete"]
         if event.refresh:
             # Refresh directory listing
             self._start_worker("load_directory", self._load_directory(self.current_path))
 
-    async def _file_exists(self, remote_path: str) -> bool:
-        """Check if a remote file exists."""
+    async def _file_exists(self, remote_path: str, timeout: int = 10) -> bool:
+        """Check if a remote file exists with timeout."""
         cmd = self._build_ssh_command(f'test -e "{remote_path}" && echo yes || echo no')
         try:
+            # Use CREATE_NO_WINDOW on Windows to prevent console inheritance
+            import sys
+            kwargs = {}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+            
             proc = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                **kwargs
             )
-            stdout, stderr = await proc.communicate()
+            # Add timeout to prevent hanging
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             
-            # Sanitize output before processing
+            # Sanitize both stdout and stderr before processing
             result = _strip_ansi(stdout.decode().strip()) if stdout else ""
+            stderr_clean = _strip_ansi(stderr.decode().strip()) if stderr else ""
+            
+            # Ignore stderr - don't print or show in UI
             return result == "yes"
+        except asyncio.TimeoutError:
+            # Kill the process if it timed out
+            try:
+                proc.kill()
+            except:
+                pass
+            return False
         except Exception:
             return False
 
@@ -909,6 +1014,17 @@ class ExplorerModal(ModalScreen):
     def set_status(self, message: str) -> None:
         """Update status bar."""
         self.query_one("#status-bar", Label).update(message)
+
+    def show_progress(self, value: int = 0) -> None:
+        """Show progress bar with given value."""
+        progress_bar = self.query_one("#progress-bar", ProgressBar)
+        progress_bar.update(progress=value)
+        progress_bar.add_class("visible")
+
+    def hide_progress(self) -> None:
+        """Hide progress bar."""
+        progress_bar = self.query_one("#progress-bar", ProgressBar)
+        progress_bar.remove_class("visible")
 
 
 class _InputModal(ModalScreen):
