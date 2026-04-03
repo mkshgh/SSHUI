@@ -27,6 +27,7 @@ python main.py
 ├── ui/
 │   ├── app.py             # Textual UI, all modals
 │   ├── config_modal.py    # Default port forwards config modal
+│   ├── explorer_modal.py  # SSH file browser (experimental)
 │   └── search.py          # Host and group filter logic
 └── utils/
     ├── config.py          # config.json load/save
@@ -83,6 +84,8 @@ Server groups are sorted A-Z (case-insensitive) and show the host count: `UATSER
 | `Ctrl+P` | Command palette (change theme, etc.) |
 | `ESC` | Back |
 | `Ctrl+Q` | Quit |
+
+UI Buttons: `[Ping] [Telnet] [Explore]` — test connectivity or open file browser
 
 ## SSH Auth
 
@@ -145,6 +148,28 @@ Click `Ping` or `Telnet` beside the search bar to test all loaded hosts concurre
 - `Telnet` — TCP connect to the host's configured port
 - `OK` (green) = reachable, `XX` (red) = unreachable, `--` = untested
 - 2 second timeout per host, all hosts tested in parallel
+
+## File Explorer (Experimental)
+
+Click `Explore` beside the search bar to open an SSH file browser for the selected host.
+
+**Features:**
+- Browse remote directories via SSH/SCP
+- Download files to local `Downloads/` folder
+- Upload files from local to remote
+- Delete remote files
+- View file contents (first 100 lines)
+
+**Navigation:**
+- Double-click directories to enter
+- Double-click `(go back)` to go up
+- Click `Home` to jump to home directory
+
+**Notes:**
+- This is an **experimental feature** — use with caution
+- All operations run via system SSH/SCP commands
+- No persistent connections — each command executes independently
+- Large directory listings may be truncated
 
 ## Logging
 
