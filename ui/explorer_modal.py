@@ -21,6 +21,7 @@ from textual.worker import Worker, get_current_worker
 from textual.message import Message
 
 import asyncssh
+from icmplib import async_ping
 from inventory.loader import Host
 
 
@@ -301,17 +302,32 @@ class ExplorerModal(ModalScreen):
             self._start_worker("ping", self._check_reachability(), group="ping", exclusive=True)
 
     async def _check_reachability(self) -> None:
-        """Worker to execute background ping returning OFFLINE if dead."""
-        if not self.conn:
-            return
+        """Worker to execute background ICMP ping returning OFFLINE if dead."""
         try:
-            # Pings over the established persistent connection securely
-            await asyncio.wait_for(self.conn.run('echo 1', timeout=3.0), timeout=5.0)
-            self._update_header_status("ONLINE", "green")
+            # Sends 1 ICMP packet natively. privileged=False uses fallback to OS ping binary safely when root is not available.
+            host_alive = await async_ping(self.host.ip, count=1, timeout=2, privileged=False)
+            
+            if host_alive.is_alive:
+                self._update_header_status("ONLINE", "green")
+            else:
+                self._update_header_status("OFFLINE", "red")
+                # Tear down the SSH connection if ICMP proves host went entirely dark
+                if self.conn:
+                    try:
+                        self.conn.close()
+                    except Exception:
+                        pass
+                    self.conn = None
+                    self.sftp = None
         except Exception:
-            self.conn = None
-            self.sftp = None
             self._update_header_status("OFFLINE", "red")
+            if self.conn:
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+                self.conn = None
+                self.sftp = None
 
     def _normalize_path(self, path: str) -> str:
         if not path: return path
