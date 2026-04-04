@@ -443,10 +443,18 @@ class InventoryApp(App):
         btn.label = "..."
 
         async def test_one(host: Host) -> None:
-            # ping mode: TCP to port 22 (SSH probe)
+            # ping mode: ICMP ping natively using icmplib
             # telnet mode: TCP to the host's configured port
-            port = 22 if mode == "ping" else host.port
-            ok = await _check_reachable(host.ip, port)
+            if mode == "ping":
+                try:
+                    from icmplib import async_ping
+                    r = await async_ping(host.ip, count=1, timeout=2.0, privileged=False)
+                    ok = r.is_alive
+                except Exception:
+                    ok = False
+            else:
+                ok = await _check_reachable(host.ip, host.port)
+
             result = "[green]OK[/green]" if ok else "[red]XX[/red]"
             if mode == "ping":
                 self._ping_status[host.name] = result

@@ -144,7 +144,7 @@ Available themes include: `textual-dark`, `textual-light`, `nord`, `gruvbox`, `d
 
 Click `Ping` or `Telnet` beside the search bar to test all loaded hosts concurrently.
 
-- `Ping` — TCP connect to port 22 (no root required)
+- `Ping` — ICMP network probe powered by OS fallback (no root required)
 - `Telnet` — TCP connect to the host's configured port
 - `OK` (green) = reachable, `XX` (red) = unreachable, `--` = untested
 - 2 second timeout per host, all hosts tested in parallel
