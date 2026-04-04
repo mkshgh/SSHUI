@@ -302,23 +302,17 @@ class ExplorerModal(ModalScreen):
             self._start_worker("ping", self._check_reachability(), group="ping", exclusive=True)
 
     async def _check_reachability(self) -> None:
-        """Worker to execute background ICMP ping returning OFFLINE if dead."""
+        """Worker to execute background Telnet check returning OFFLINE if dead."""
         try:
-            # Sends 1 ICMP packet natively. privileged=False uses fallback to OS ping binary safely when root is not available.
-            host_alive = await async_ping(self.host.ip, count=1, timeout=2, privileged=False)
-            
-            if host_alive.is_alive:
-                self._update_header_status("ONLINE", "green")
-            else:
-                self._update_header_status("OFFLINE", "red")
-                # Tear down the SSH connection if ICMP proves host went entirely dark
-                if self.conn:
-                    try:
-                        self.conn.close()
-                    except Exception:
-                        pass
-                    self.conn = None
-                    self.sftp = None
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host.ip, self.host.port), timeout=2.0
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            self._update_header_status("ONLINE", "green")
         except Exception:
             self._update_header_status("OFFLINE", "red")
             if self.conn:

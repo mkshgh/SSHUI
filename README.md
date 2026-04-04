@@ -149,15 +149,18 @@ Click `Ping` or `Telnet` beside the search bar to test all loaded hosts concurre
 - `OK` (green) = reachable, `XX` (red) = unreachable, `--` = untested
 - 2 second timeout per host, all hosts tested in parallel
 
-## File Explorer (Experimental)
+## File Explorer
 
 Click `Explore` beside the search bar to open an SSH file browser for the selected host.
 
 **Features:**
-- Browse remote directories via SSH/SCP
-- Download files to local `Downloads/` folder
-- Upload files from local to remote
-- Delete remote files
+- Pure Python Persistent SFTP / SSH interactions powered by `asyncssh`
+- Extremely fast navigation bypassing OS-level `ssh.exe` subprocesses and UI freezing
+- 10-second background TCP Port (Telnet-style) watchdog (displays ONLINE/OFFLINE dynamically)
+- Precise Transfer `ProgressBar` handling for recursive and standard operations
+- Download files natively to local `Downloads/` folder
+- Upload local files to the remote server
+- Delete remote files securely or recursively dump directories
 - View file contents (first 100 lines)
 
 **Navigation:**
@@ -166,10 +169,8 @@ Click `Explore` beside the search bar to open an SSH file browser for the select
 - Click `Home` to jump to home directory
 
 **Notes:**
-- This is an **experimental feature** — use with caution
-- All operations run via system SSH/SCP commands
-- No persistent connections — each command executes independently
-- Large directory listings may be truncated
+- Integrates seamlessly through python threads and yields absolute zero impact to the Textual interface event loop.
+- No longer depends upon platform specific command line SSH or SCP bins.
 
 ## Logging
 

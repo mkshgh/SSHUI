@@ -3,11 +3,11 @@
 ## 2026-04-04
 
 ### Added
-- **SSH File Explorer (Experimental)** — browse, download, upload, and delete files on remote hosts
+- **SSH File Explorer** — cross-platform seamless SFTP interactions
   - Click `Explore` button or use UI button to open file browser
-  - Double-click navigation for directories
-  - Download files to local `Downloads/` folder
-  - Upload files from local to remote
+  - Persistent tunneling through `asyncssh` (No more OS system `ssh`/`scp` freezes)
+  - 10-second background TCP Port (Telnet-style) watchdog indicating connection health
+  - Double-click navigation for rapid directory expansion 
+  - Download/Upload directly natively with integrated Textual ProgressBars
   - Delete remote files with confirmation
-  - View file contents (preview limited to 100 lines)
-  - Uses system SSH/SCP commands (no persistent connections)
+  - View file preview contents
