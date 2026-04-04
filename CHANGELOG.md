@@ -11,3 +11,7 @@
   - Download/Upload directly natively with integrated Textual ProgressBars
   - Delete remote files with confirmation
   - View file preview contents
+
+### Changed
+- **Connectivity Tests**
+  - Upgraded the main UI `Ping` button to dispatch genuine `icmplib` ICMP network probes (using OS fallback to bypass root restrictions) instead of TCP port 22 tests.
