@@ -53,12 +53,12 @@ Press `R` to rebuild the cache from source.
 ## UI Layout
 
 ```
-┌─ Server Groups ──────┬─ Hosts ──────────────────────────────────────────────┐
-│                      │ [ Search hosts...          ] [Ping] [Telnet]          │
-│  production          │ P   T   Name              IP                User  Port│
+┌─ Server Groups ──────┬─ Hosts ────────────────────────────────────────────────┐
+│                      │ [ Search hosts...          ] [Ping] [Telnet] [Explore] │
+│  production          │ P   T   Name              IP                User  Port │
 │  staging             │ OK  --  server1            10.0.0.1          ubuntu 22 │
 │  k8s                 │ XX  OK  server2            10.0.0.2          ubuntu 22 │
-└──────────────────────┴──────────────────────────────────────────────────────┘
+└──────────────────────┴────────────────────────────────────────────────────────┘
 ```
 
 - `P` — Ping result (TCP probe to port 22)
@@ -158,6 +158,10 @@ Click `Explore` beside the search bar to open an SSH file browser for the select
 - Extremely fast navigation bypassing OS-level `ssh.exe` subprocesses and UI freezing
 - 10-second background TCP Port (Telnet-style) watchdog (displays ONLINE/OFFLINE dynamically)
 - Precise Transfer `ProgressBar` handling for recursive and standard operations
+- **DataTable Architecture**: Complete DOM virtualization resolving lockups to safely render 10,000+ files
+- **Data Columns**: Explicit structural splits showing [Name, Type, Size, Modified Date]
+- **Auto-Complete Navigation**: Built-in native SSH IntelliSense (`SSHPathSuggester`) dynamically recommending remote directories as you type
+- **Local Filtering**: Instantly isolate files recursively matching string inputs natively beneath the path bar
 - Download files natively to local `Downloads/` folder
 - Upload local files to the remote server
 - Delete remote files securely or recursively dump directories
