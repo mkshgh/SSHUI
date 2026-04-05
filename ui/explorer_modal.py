@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import List, Optional, Tuple, Dict, Any
 
+from textual import events
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
@@ -216,6 +217,30 @@ class SSHPathSuggester(Suggester):
         return None
 
 
+class ExplorerTable(DataTable):
+    """Custom wrapper to forcefully extract native Double Clicks."""
+    
+    class DoubleClick(Message):
+        def __init__(self, row_index: int) -> None:
+            super().__init__()
+            self.row_index = row_index
+
+    def on_click(self, event: events.Click) -> None:
+        import time
+        now = time.monotonic()
+        last = getattr(self, "_last_click_time", 0)
+        
+        if hasattr(super(), "on_click"):
+            super().on_click(event)
+            
+        # Treat any standard click rapidly sequential as double click
+        if now - last < 0.4:
+            self._last_click_time = 0
+            self.post_message(self.DoubleClick(self.cursor_row))
+        else:
+            self._last_click_time = now
+
+
 class ExplorerModal(ModalScreen):
     """
     File explorer using asyncssh natively.
@@ -295,7 +320,7 @@ class ExplorerModal(ModalScreen):
                 yield Button("Go", id="btn-go")
                 yield Button("↻", id="btn-refresh")
             yield Input(placeholder="Search files...", id="file-search-bar")
-            yield DataTable(id="file-list")
+            yield ExplorerTable(id="file-list")
             with Horizontal(id="action-panel"):
                 yield Button("Download", id="btn-download", variant="primary")
                 yield Button("Upload", id="btn-upload")
@@ -305,7 +330,7 @@ class ExplorerModal(ModalScreen):
             yield ProgressBar(id="progress-bar", total=100)
 
     async def on_mount(self) -> None:
-        table = self.query_one(DataTable)
+        table = self.query_one(ExplorerTable)
         table.add_columns("Name", "Type", "Size", "Modified")
         table.cursor_type = "row"
         self._start_worker("load_directory", self._load_directory("."))
@@ -423,7 +448,7 @@ class ExplorerModal(ModalScreen):
             self.set_status(f"Error: {error_msg}")
             
             self.query_one("#path-input", Input).value = self.current_path
-            table = self.query_one("#file-list", DataTable)
+            table = self.query_one("#file-list")
             table.clear()
             
             with self.app.batch_update():
@@ -433,7 +458,7 @@ class ExplorerModal(ModalScreen):
 
     async def _render_file_list(self, entries: List[FileEntry]) -> None:
         """Render file list using DataTable for infinite virtualization scalability."""
-        table = self.query_one("#file-list", DataTable)
+        table = self.query_one("#file-list")
         table.clear()
         self._row_keys = []
         
@@ -550,7 +575,7 @@ class ExplorerModal(ModalScreen):
                 return
                 
             # Native Navigation if hovering DataTable
-            table = self.query_one("#file-list", DataTable)
+            table = self.query_one("#file-list")
             if table.has_focus:
                 try: item_id = self._row_keys[table.cursor_row]
                 except Exception: return
@@ -568,6 +593,25 @@ class ExplorerModal(ModalScreen):
                     dir_name = self._id_to_name.get(safe_name, safe_name)
                     new_path = str(PurePosixPath(self.current_path) / dir_name)
                     self._start_worker("load_directory", self._load_directory(new_path))
+
+    async def on_explorer_table_double_click(self, event: ExplorerTable.DoubleClick) -> None:
+        """Handle raw double click reliably via customized DataTable interceptor."""
+        try: item_id = self._row_keys[event.row_index]
+        except Exception: return
+        
+        if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
+            self.set_status("Please wait for current operation to complete")
+            return
+            
+        if item_id == "entry_parent":
+            parent = str(PurePosixPath(self.current_path).parent)
+            if parent == "." or self.current_path == ".": parent = "."
+            self._start_worker("load_directory", self._load_directory(parent))
+        elif item_id.startswith("entry_dir_"):
+            safe_name = item_id.removeprefix("entry_dir_")
+            dir_name = self._id_to_name.get(safe_name, safe_name)
+            new_path = str(PurePosixPath(self.current_path) / dir_name)
+            self._start_worker("load_directory", self._load_directory(new_path))
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -592,7 +636,7 @@ class ExplorerModal(ModalScreen):
             self.dismiss(None)
 
     def _get_selected_file(self) -> Optional[Tuple[str, bool]]:
-        table = self.query_one("#file-list", DataTable)
+        table = self.query_one("#file-list")
         try:
             item_id = self._row_keys[table.cursor_row]
         except Exception:
