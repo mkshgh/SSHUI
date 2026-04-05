@@ -225,6 +225,7 @@ class ExplorerModal(ModalScreen):
         self._home_path: str = "" 
         self.entries: List[FileEntry] = []
         self._id_to_name: Dict[str, str] = {}
+        self._row_keys: List[str] = []
         self._upload_state = UploadState()
         self._download_state = DownloadState()
         self._delete_state = DeleteState()
@@ -387,10 +388,12 @@ class ExplorerModal(ModalScreen):
         """Render file list using DataTable for infinite virtualization scalability."""
         table = self.query_one("#file-list", DataTable)
         table.clear()
+        self._row_keys = []
         
         with self.app.batch_update():
             if self.current_path != "." and self.current_path != "/":
                 table.add_row("[dim]../ (go up)[/dim]", "Dir", "", "", key="entry_parent")
+                self._row_keys.append("entry_parent")
 
             for entry in entries:
                 safe_name = _sanitize_id(entry.name)
@@ -414,6 +417,7 @@ class ExplorerModal(ModalScreen):
                         item_id = f"entry_file_{safe_name}"
                 
                 table.add_row(display_name, item_type, size_str, entry.mtime, key=item_id)
+                self._row_keys.append(item_id)
 
     async def _go_home(self) -> None:
         if self._operation_in_progress:
@@ -471,8 +475,7 @@ class ExplorerModal(ModalScreen):
                     if now - last < 0.4:
                         self._last_click_time = 0
                         try:
-                            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-                            item_id = row_key.value
+                            item_id = self._row_keys[table.cursor_row]
                         except Exception:
                             return
                         if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
@@ -490,6 +493,28 @@ class ExplorerModal(ModalScreen):
                             self._start_worker("load_directory", self._load_directory(new_path))
                 return
             widget = getattr(widget, "parent", None)
+
+    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle Enter key dynamically to trigger traversal natively."""
+        try:
+            item_id = str(event.row_key.value)
+        except Exception:
+            return
+            
+        if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
+            self.set_status("Please wait for current operation to complete")
+            return
+            
+        if item_id == "entry_parent":
+            parent = str(PurePosixPath(self.current_path).parent)
+            if parent == "." or self.current_path == ".":
+                parent = "."
+            self._start_worker("load_directory", self._load_directory(parent))
+        elif item_id.startswith("entry_dir_"):
+            safe_name = item_id.removeprefix("entry_dir_")
+            dir_name = self._id_to_name.get(safe_name, safe_name)
+            new_path = str(PurePosixPath(self.current_path) / dir_name)
+            self._start_worker("load_directory", self._load_directory(new_path))
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -516,8 +541,7 @@ class ExplorerModal(ModalScreen):
     def _get_selected_file(self) -> Optional[Tuple[str, bool]]:
         table = self.query_one("#file-list", DataTable)
         try:
-            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-            item_id = row_key.value
+            item_id = self._row_keys[table.cursor_row]
         except Exception:
             return None
         
