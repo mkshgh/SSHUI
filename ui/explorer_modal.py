@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple, Dict, Any
 
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets import (
     Label, Button, ListView, ListItem, Input, Static, ProgressBar, DataTable
 )
@@ -169,6 +170,52 @@ class ConfirmModal(ModalScreen):
             self.dismiss(False)
 
 
+class SSHPathSuggester(Suggester):
+    """Dynamically interfaces over SFTP recursively feeding accurate directory autocomplete guesses."""
+    
+    def __init__(self, modal: 'ExplorerModal') -> None:
+        super().__init__(use_cache=True, case_sensitive=False)
+        self.modal = modal
+        
+    async def get_suggestion(self, value: str) -> Optional[str]:
+        if not value or not self.modal.sftp: return None
+        if not value.startswith("/"): return None
+        
+        try:
+            if value == "/":
+                parent, prefix = "/", ""
+            elif value.endswith("/"):
+                parent = value.rstrip("/")
+                if not parent: parent = "/"
+                prefix = ""
+            else:
+                path_obj = PurePosixPath(value)
+                parent = str(path_obj.parent)
+                prefix = str(path_obj.name)
+                
+            names = await asyncio.wait_for(self.modal.sftp.readdir(parent), timeout=1.0)
+            
+            matches = []
+            for n in names:
+                if n.filename in ('.', '..'): continue
+                if prefix and not n.filename.lower().startswith(prefix.lower()): continue
+                
+                is_dir = False
+                if n.attrs.permissions is not None:
+                    is_dir = stat.S_ISDIR(n.attrs.permissions) or stat.S_ISLNK(n.attrs.permissions)
+                
+                if is_dir:
+                    matches.append(n.filename)
+            
+            if matches:
+                matches.sort()
+                best = matches[0]
+                return f"/{best}/" if parent == "/" else f"{parent}/{best}/"
+        except Exception:
+            return None
+        return None
+
+
 class ExplorerModal(ModalScreen):
     """
     File explorer using asyncssh natively.
@@ -244,7 +291,7 @@ class ExplorerModal(ModalScreen):
             )
             with Horizontal(id="path-bar"):
                 yield Button("Home", id="btn-home")
-                yield Input(value=self.current_path, id="path-input")
+                yield Input(value=self.current_path, id="path-input", suggester=SSHPathSuggester(self))
                 yield Button("Go", id="btn-go")
                 yield Button("↻", id="btn-refresh")
             yield Input(placeholder="Search files...", id="file-search-bar")
@@ -494,27 +541,33 @@ class ExplorerModal(ModalScreen):
                 return
             widget = getattr(widget, "parent", None)
 
-    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Handle Enter key dynamically to trigger traversal natively."""
-        try:
-            item_id = str(event.row_key.value)
-        except Exception:
-            return
-            
-        if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
-            self.set_status("Please wait for current operation to complete")
-            return
-            
-        if item_id == "entry_parent":
-            parent = str(PurePosixPath(self.current_path).parent)
-            if parent == "." or self.current_path == ".":
-                parent = "."
-            self._start_worker("load_directory", self._load_directory(parent))
-        elif item_id.startswith("entry_dir_"):
-            safe_name = item_id.removeprefix("entry_dir_")
-            dir_name = self._id_to_name.get(safe_name, safe_name)
-            new_path = str(PurePosixPath(self.current_path) / dir_name)
-            self._start_worker("load_directory", self._load_directory(new_path))
+    async def on_key(self, event) -> None:
+        if event.key == "enter":
+            # Native Submit if typing path
+            if self.query_one("#path-input", Input).has_focus:
+                path = self.query_one("#path-input", Input).value
+                self._start_worker("load_directory", self._load_directory(path))
+                return
+                
+            # Native Navigation if hovering DataTable
+            table = self.query_one("#file-list", DataTable)
+            if table.has_focus:
+                try: item_id = self._row_keys[table.cursor_row]
+                except Exception: return
+                
+                if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
+                    self.set_status("Please wait for current operation to complete")
+                    return
+                    
+                if item_id == "entry_parent":
+                    parent = str(PurePosixPath(self.current_path).parent)
+                    if parent == "." or self.current_path == ".": parent = "."
+                    self._start_worker("load_directory", self._load_directory(parent))
+                elif item_id.startswith("entry_dir_"):
+                    safe_name = item_id.removeprefix("entry_dir_")
+                    dir_name = self._id_to_name.get(safe_name, safe_name)
+                    new_path = str(PurePosixPath(self.current_path) / dir_name)
+                    self._start_worker("load_directory", self._load_directory(new_path))
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
