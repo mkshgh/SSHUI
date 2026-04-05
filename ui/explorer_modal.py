@@ -14,8 +14,9 @@ from typing import List, Optional, Tuple, Dict, Any
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Label, Button, ListView, ListItem, Input, Static, ProgressBar
+    Label, Button, ListView, ListItem, Input, Static, ProgressBar, DataTable
 )
+from datetime import datetime
 from textual.containers import Horizontal, Vertical
 from textual.worker import Worker, get_current_worker
 from textual.message import Message
@@ -45,16 +46,21 @@ def _parse_sftp_name(name_obj: asyncssh.SFTPName) -> FileEntry:
     is_link = False
     link_target = ""
     size = attrs.size or 0
+    mtime_str = ""
+    
+    if attrs.mtime is not None:
+        try:
+            mtime_str = datetime.fromtimestamp(attrs.mtime).strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            pass
     
     if attrs.permissions is not None:
         is_dir = stat.S_ISDIR(attrs.permissions)
         is_link = stat.S_ISLNK(attrs.permissions)
-        
-        # Use longname to parse link target if available (common in most openssh sftp servers)
         if is_link and name_obj.longname and "->" in name_obj.longname:
             link_target = name_obj.longname.split("->")[-1].strip()
             
-    return FileEntry(name, is_dir or is_link, size, "", link_target)
+    return FileEntry(name, is_dir or is_link, size, "", link_target, mtime_str)
 
 
 @dataclass
@@ -64,6 +70,7 @@ class FileEntry:
     size: int = 0
     perms: str = ""
     link_target: str = ""
+    mtime: str = ""
 
 
 class UploadState:
@@ -187,6 +194,7 @@ class ExplorerModal(ModalScreen):
         margin-bottom: 1;
     }
     #path-input { width: 1fr; }
+    #file-search-bar { height: 3; margin-bottom: 1; }
     #file-list {
         height: 1fr;
         border: solid $primary;
@@ -238,7 +246,8 @@ class ExplorerModal(ModalScreen):
                 yield Input(value=self.current_path, id="path-input")
                 yield Button("Go", id="btn-go")
                 yield Button("↻", id="btn-refresh")
-            yield ListView(id="file-list")
+            yield Input(placeholder="Search files...", id="file-search-bar")
+            yield DataTable(id="file-list")
             with Horizontal(id="action-panel"):
                 yield Button("Download", id="btn-download", variant="primary")
                 yield Button("Upload", id="btn-upload")
@@ -248,6 +257,9 @@ class ExplorerModal(ModalScreen):
             yield ProgressBar(id="progress-bar", total=100)
 
     async def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_columns("Name", "Type", "Size", "Modified")
+        table.cursor_type = "row"
         self._start_worker("load_directory", self._load_directory("."))
         self.set_interval(10.0, self._check_connection)
 
@@ -363,46 +375,45 @@ class ExplorerModal(ModalScreen):
             self.set_status(f"Error: {error_msg}")
             
             self.query_one("#path-input", Input).value = self.current_path
-            file_list = self.query_one("#file-list", ListView)
-            await file_list.clear()
-            
-            items_to_add = []
-            if self.current_path != "." and self.current_path != "/":
-                items_to_add.append(ListItem(Label("[dim]../ (go up)[/dim]", markup=True), id="entry_parent"))
-            items_to_add.append(ListItem(Label(f"[red]Error: {error_msg}[/red]", markup=True), id="error_entry"))
+            table = self.query_one("#file-list", DataTable)
+            table.clear()
             
             with self.app.batch_update():
-               file_list.extend(items_to_add)
+                if self.current_path != "." and self.current_path != "/":
+                    table.add_row("../ (go up)", "Dir", "", "", key="entry_parent")
+                table.add_row(f"[red]Error: {error_msg}[/red]", "Error", "", "", key="error_entry")
 
     async def _render_file_list(self, entries: List[FileEntry]) -> None:
-        """Render file list with batch updating to completely eliminate UI freezes."""
-        file_list = self.query_one("#file-list", ListView)
-        await file_list.clear()
-
-        items_to_add = []
-        if self.current_path != "." and self.current_path != "/":
-            items_to_add.append(ListItem(Label("[dim]../ (go up)[/dim]", markup=True), id="entry_parent"))
-
-        for entry in entries:
-            safe_name = _sanitize_id(entry.name)
-            self._id_to_name[safe_name] = entry.name
-            
-            if entry.is_dir:
-                display = f"📁 {entry.name}/"
-                item_id = f"entry_dir_{safe_name}"
-            else:
-                if entry.link_target:
-                    display = f"🔗 {entry.name} -> {entry.link_target}"
-                    item_id = f"entry_link_{safe_name}"
-                else:
-                    size_str = self._format_size(entry.size)
-                    display = f"📄 {entry.name} ({size_str})"
-                    item_id = f"entry_file_{safe_name}"
-            
-            items_to_add.append(ListItem(Label(display, markup=True), id=item_id))
-            
+        """Render file list using DataTable for infinite virtualization scalability."""
+        table = self.query_one("#file-list", DataTable)
+        table.clear()
+        
         with self.app.batch_update():
-            file_list.extend(items_to_add)
+            if self.current_path != "." and self.current_path != "/":
+                table.add_row("[dim]../ (go up)[/dim]", "Dir", "", "", key="entry_parent")
+
+            for entry in entries:
+                safe_name = _sanitize_id(entry.name)
+                self._id_to_name[safe_name] = entry.name
+                
+                if entry.is_dir:
+                    display_name = f"📁 {entry.name}"
+                    item_type = "Dir"
+                    item_id = f"entry_dir_{safe_name}"
+                    size_str = ""
+                else:
+                    if entry.link_target:
+                        display_name = f"🔗 {entry.name}"
+                        item_type = f"Link -> {entry.link_target}"
+                        item_id = f"entry_link_{safe_name}"
+                        size_str = ""
+                    else:
+                        display_name = f"📄 {entry.name}"
+                        size_str = self._format_size(entry.size)
+                        item_type = "File"
+                        item_id = f"entry_file_{safe_name}"
+                
+                table.add_row(display_name, item_type, size_str, entry.mtime, key=item_id)
 
     async def _go_home(self) -> None:
         if self._operation_in_progress:
@@ -440,37 +451,43 @@ class ExplorerModal(ModalScreen):
         elif size < 1024 * 1024 * 1024: return f"{size/(1024*1024):.1f}M"
         return f"{size/(1024*1024*1024):.1f}G"
 
-    async def on_list_view_selected(self, event: ListView.Selected) -> None:
-        pass
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter files based on the global search input."""
+        if event.input.id == "file-search-bar":
+            term = event.value.lower()
+            filtered = [e for e in self.entries if term in e.name.lower()]
+            await self._render_file_list(filtered)
 
     async def on_click(self, event) -> None:
         import time
-        file_list = self.query_one("#file-list", ListView)
+        table = self.query_one("#file-list", DataTable)
         widget = event.widget
         while widget is not None:
-            if widget is file_list:
+            if widget is table:
                 if event.button == 1:
                     now = time.monotonic()
                     last = getattr(self, "_last_click_time", 0)
                     self._last_click_time = now
                     if now - last < 0.4:
                         self._last_click_time = 0
-                        item = file_list.highlighted_child
-                        if item:
-                            item_id = item.id or ""
-                            if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
-                                self.set_status("Please wait for current operation to complete")
-                                return
-                            if item_id == "entry_parent":
-                                parent = str(PurePosixPath(self.current_path).parent)
-                                if parent == "." or self.current_path == ".":
-                                    parent = "."
-                                self._start_worker("load_directory", self._load_directory(parent))
-                            elif item_id.startswith("entry_dir_"):
-                                safe_name = item_id.removeprefix("entry_dir_")
-                                dir_name = self._id_to_name.get(safe_name, safe_name)
-                                new_path = str(PurePosixPath(self.current_path) / dir_name)
-                                self._start_worker("load_directory", self._load_directory(new_path))
+                        try:
+                            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+                            item_id = row_key.value
+                        except Exception:
+                            return
+                        if self._operation_in_progress and (item_id == "entry_parent" or item_id.startswith("entry_dir_")):
+                            self.set_status("Please wait for current operation to complete")
+                            return
+                        if item_id == "entry_parent":
+                            parent = str(PurePosixPath(self.current_path).parent)
+                            if parent == "." or self.current_path == ".":
+                                parent = "."
+                            self._start_worker("load_directory", self._load_directory(parent))
+                        elif item_id.startswith("entry_dir_"):
+                            safe_name = item_id.removeprefix("entry_dir_")
+                            dir_name = self._id_to_name.get(safe_name, safe_name)
+                            new_path = str(PurePosixPath(self.current_path) / dir_name)
+                            self._start_worker("load_directory", self._load_directory(new_path))
                 return
             widget = getattr(widget, "parent", None)
 
@@ -497,14 +514,13 @@ class ExplorerModal(ModalScreen):
             self.dismiss(None)
 
     def _get_selected_file(self) -> Optional[Tuple[str, bool]]:
-        file_list = self.query_one("#file-list", ListView)
-        idx = file_list.index
-        if idx is None: return None
-        items = list(file_list.children)
-        if idx < 0 or idx >= len(items): return None
+        table = self.query_one("#file-list", DataTable)
+        try:
+            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+            item_id = row_key.value
+        except Exception:
+            return None
         
-        item = items[idx]
-        item_id = item.id or ""
         if item_id == "entry_parent": return ("..", True)
         elif item_id.startswith("entry_dir_"):
             safe_name = item_id.removeprefix("entry_dir_")
