@@ -2,6 +2,11 @@
 
 A keyboard-driven terminal SSH launcher for Ansible inventories, built with [Textual](https://github.com/Textualize/textual).
 
+
+## Demo
+
+![SSHUI Demo](assets/UI.gif)
+
 ## Install
 
 ```bash
