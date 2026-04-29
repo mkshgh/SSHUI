@@ -42,9 +42,9 @@ python main.py
 ## servers.csv
 
 ```csv
-server_type,path
-production,/path/to/ansible/production/inventory.yaml
-staging,/path/to/ansible/staging/inventory.yaml
+yaml_header,server_type,path
+production,production,C:\Applications\SSHUI\config\inventory.yaml
+preprod,hosts,C:\Applications\SSHUI\config\inventory.yaml
 ```
 
 The top-level YAML key in each inventory file is auto-detected — it does not need to match `server_type`.
