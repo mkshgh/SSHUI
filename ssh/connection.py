@@ -7,7 +7,6 @@ import subprocess
 from typing import List
 from inventory.loader import Host
 
-
 def build_ssh_command(host: Host, forwards: List[str]) -> str:
     parts = ["ssh"]
     for fwd in forwards:
@@ -67,18 +66,31 @@ def _open_windows(ssh_cmd: str) -> None:
         subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit", "-Command", ssh_cmd])
 
 
+import subprocess
+import shlex
+
 def _open_linux(ssh_cmd: str) -> None:
     """Try tab-capable terminals first, fall back to any available terminal."""
+
+    ssh_args = shlex.split(ssh_cmd)
+
     tab_attempts = [
-        ["gnome-terminal", "--tab", "--", "bash", "-c", f"{ssh_cmd}; exec bash"],
-        ["xfce4-terminal", "--tab", "--command", ssh_cmd],
-        ["konsole", "--new-tab", "-e", ssh_cmd],
-        ["tilix", "--action=app-new-session", "-e", ssh_cmd],
+        ["gnome-terminal", "--tab", "--", "bash", "-c",
+         f"{shlex.join(ssh_args)}; exec bash"],
+
+        ["xfce4-terminal", "--tab", "--command",
+         shlex.join(ssh_args)],
+
+        ["konsole", "--new-tab", "-e", *ssh_args],
+
+        ["tilix", "--action=app-new-session", "-e", *ssh_args],
     ]
+
     window_fallbacks = [
-        ["x-terminal-emulator", "-e", ssh_cmd],
-        ["xterm", "-e", ssh_cmd],
+        ["x-terminal-emulator", "-e", *ssh_args],
+        ["xterm", "-e", *ssh_args],
     ]
+
     for cmd in tab_attempts + window_fallbacks:
         try:
             subprocess.Popen(cmd)
@@ -86,6 +98,7 @@ def _open_linux(ssh_cmd: str) -> None:
         except FileNotFoundError:
             continue
 
+    raise RuntimeError("No supported terminal emulator found.")
 
 def _open_macos(ssh_cmd: str) -> None:
     """Try a new tab in the front Terminal window, fall back to a new window."""

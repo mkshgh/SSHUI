@@ -1,8 +1,18 @@
 from typing import List
 
-CSV_FILE: str = "servers.csv"
-LOG_FILE: str = "ssh_login.log"
-CONF_DIR: str = ".conf"
+import os
+import platform
+from typing import List
+
+if platform.system() == "Linux":
+    BASE_DIR = "/opt/sshui"
+else:
+    BASE_DIR = "."
+
+CSV_FILE: str = os.path.join(BASE_DIR, "servers.csv")
+LOG_FILE: str = os.path.join(BASE_DIR, "ssh_login.log")
+CONF_DIR: str = os.path.join(BASE_DIR, ".conf")
+
 
 DEFAULT_PORTS: List[dict] = [
     {"label": "Postgres  5432", "local": 5432, "remote": 5432},
