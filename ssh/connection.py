@@ -65,40 +65,90 @@ def _open_windows(ssh_cmd: str) -> None:
         # Fallback: plain PowerShell window
         subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit", "-Command", ssh_cmd])
 
-
-import subprocess
+import os
 import shlex
+import shutil
+import subprocess
+
 
 def _open_linux(ssh_cmd: str) -> None:
-    """Try tab-capable terminals first, fall back to any available terminal."""
+    """Detect the current terminal and open SSH in an existing window tab."""
 
-    ssh_args = shlex.split(ssh_cmd)
+    shell = f"{ssh_cmd}; exec bash -i"
 
-    tab_attempts = [
-        ["gnome-terminal", "--tab", "--", "bash", "-c",
-         f"{shlex.join(ssh_args)}; exec bash"],
+    terminals = {
+        "ptyxis": ["ptyxis", "--tab", "--"],
+        "gnome-terminal": ["gnome-terminal", "--tab", "--"],
+        "konsole": ["konsole", "--new-tab", "-e"],
+        "xfce4-terminal": ["xfce4-terminal", "--tab", "--command"],
+        "mate-terminal": ["mate-terminal", "--tab", "--"],
+        "terminator": ["terminator", "--new-tab", "-x"],
+        "kitty": ["kitty", "@", "launch", "--type=tab"],
+        "wezterm": ["wezterm", "cli", "spawn"],
+    }
 
-        ["xfce4-terminal", "--tab", "--command",
-         shlex.join(ssh_args)],
+    # Detect terminal from environment.
+    terminal = None
 
-        ["konsole", "--new-tab", "-e", *ssh_args],
+    env_detection = {
+        "WEZTERM_PANE": "wezterm",
+        "KITTY_WINDOW_ID": "kitty",
+        "TILIX_ID": "tilix",
+        "GNOME_TERMINAL_SCREEN": "gnome-terminal",
+    }
 
-        ["tilix", "--action=app-new-session", "-e", *ssh_args],
-    ]
+    for variable, name in env_detection.items():
+        if os.environ.get(variable):
+            terminal = name
+            break
 
-    window_fallbacks = [
-        ["x-terminal-emulator", "-e", *ssh_args],
-        ["xterm", "-e", *ssh_args],
-    ]
+    # Detect terminal from parent process tree.
+    if not terminal:
+        pid = os.getpid()
 
-    for cmd in tab_attempts + window_fallbacks:
-        try:
-            subprocess.Popen(cmd)
-            return
-        except FileNotFoundError:
-            continue
+        for _ in range(20):
+            try:
+                with open(f"/proc/{pid}/comm") as f:
+                    name = f.read().strip().lower()
 
-    raise RuntimeError("No supported terminal emulator found.")
+                if name in ("ptyxis", "ptyxis-agent"):
+                    terminal = "ptyxis"
+                    break
+
+                if name in ("gnome-terminal-server",):
+                    terminal = "gnome-terminal"
+                    break
+
+                if name in terminals:
+                    terminal = name
+                    break
+
+                with open(f"/proc/{pid}/stat") as f:
+                    stat = f.read()
+
+                pid = int(stat.rsplit(")", 1)[1].split()[1])
+
+                if pid <= 1:
+                    break
+
+            except (OSError, ValueError, IndexError):
+                break
+
+    # Ubuntu 25.10+ / 26.04 default terminal.
+    if not terminal and shutil.which("ptyxis"):
+        terminal = "ptyxis"
+
+    if terminal not in terminals:
+        raise RuntimeError(
+            f"Cannot identify a supported terminal (detected: {terminal})"
+        )
+
+    if not shutil.which(terminal):
+        raise RuntimeError(f"Terminal executable not found: {terminal}")
+
+    command = terminals[terminal] + ["bash", "-lc", shell]
+
+    subprocess.Popen(command)
 
 def _open_macos(ssh_cmd: str) -> None:
     """Try a new tab in the front Terminal window, fall back to a new window."""
